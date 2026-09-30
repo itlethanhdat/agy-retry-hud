@@ -1,0 +1,5 @@
+agy-retry-hud v0.4.2 offline regression
+Date: 2026-09-30
+Result: 82/82 tests PASS, 0 failed, 0 skipped.
+Windows regression: statusLine and installed Stop-hook commands use quote-safe PowerShell -EncodedCommand launchers; path-with-spaces command generation is covered.
+Live authenticated AGY execution remains an external runtime verification gate.

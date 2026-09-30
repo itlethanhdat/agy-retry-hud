@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "private": true,
+  "version": "0.4.5",
+  "bin": {
+    "agy-retryctl": "./dist/retryctl.js"
+  },
+  "description": "AGY Retry HUD plugin"
+}

@@ -1,0 +1,3 @@
+#!/usr/bin/env node
+import fs from 'node:fs';import path from 'node:path';import {fileURLToPath} from 'node:url';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),src=path.join(root,'src'),dest=path.join(root,'plugin','agy-retry-hud','dist');fs.rmSync(dest,{recursive:true,force:true});fs.mkdirSync(dest,{recursive:true});for(const name of fs.readdirSync(src))if(name.endsWith('.js'))fs.copyFileSync(path.join(src,name),path.join(dest,name));fs.chmodSync(path.join(dest,'native-entry.js'),0o755);fs.chmodSync(path.join(dest,'retryctl.js'),0o755);console.log(`built ${fs.readdirSync(dest).length} dist files`);

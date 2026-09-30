@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agy-retry-hud.local/schemas/handoff-v1.json",
+  "title": "AGY Retry HUD Portable Handoff Manifest v1",
+  "type": "object",
+  "required": ["format", "version", "handoffId", "project", "createdAt", "reason", "quality", "workspaceIdentity", "status"],
+  "properties": {
+    "format": {"const": "agy-retry-handoff"},
+    "version": {"const": 1},
+    "handoffId": {"type": "string"},
+    "project": {"type": "string"},
+    "createdAt": {"type": "string"},
+    "reason": {"type": "string"},
+    "quality": {"enum": ["mechanical", "semantic"]},
+    "sourceConversationId": {"type": ["string", "null"]},
+    "workspaceIdentity": {"type": "object"},
+    "status": {"type": "string"}
+  },
+  "additionalProperties": true
+}

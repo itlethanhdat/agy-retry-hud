@@ -1,0 +1,41 @@
+{
+  "hud": {
+    "color": true,
+    "multiline": true,
+    "showProgressBar": true,
+    "showPlan": true,
+    "showBranch": true,
+    "showCwd": true,
+    "showTokens": true,
+    "showAgentState": true,
+    "showRetry": true,
+    "showHandoff": true,
+    "barWidth": 10
+  },
+  "retry": {
+    "enabled": true,
+    "stopWhenWeeklyExhausted": true,
+    "weeklyRemainingThreshold": 0.01,
+    "autoDisarmIncidentOnSuccess": true,
+    "requireCurrentIncidentBeforeDispatch": true,
+    "quotaFallbackMs": 18000000,
+    "resetMarginMs": 90000,
+    "jitterMs": 30000,
+    "transientBaseMs": 60000,
+    "transientCapMs": 900000,
+    "maxTransientRetries": 6,
+    "maxQuotaRetries": 2,
+    "maxJobElapsedMs": 86400000,
+    "watchdogMs": 3600000
+  },
+  "handoff": {
+    "enabled": true,
+    "snapshotAt": 85,
+    "prepareAt": 90,
+    "rolloverAt": 95,
+    "cancelRolloverBelow": 80,
+    "autoCreateNewSession": true,
+    "semanticSummary": true,
+    "mechanicalFallback": true
+  }
+}

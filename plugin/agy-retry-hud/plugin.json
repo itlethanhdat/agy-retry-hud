@@ -1,0 +1,5 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "agy-retry-hud",
+  "description": "Native Antigravity CLI HUD with policy-controlled auto retry, weekly quota safety, portable handoff, session rollover, and AGY skills."
+}

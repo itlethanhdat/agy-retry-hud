@@ -1,0 +1,7 @@
+Linux PTY smoke: PASS
+Real Node CLI demo, no API.
+Initial 100x24, resized to 60x18.
+Bracketed paste: Vietnamese with newline retained as draft.
+Simulated 503 -> WAIT_BACKOFF -> same-session SUCCESS.
+Ctrl+D exits 0 and restores alternate screen.
+macOS/Windows: not executed here.
