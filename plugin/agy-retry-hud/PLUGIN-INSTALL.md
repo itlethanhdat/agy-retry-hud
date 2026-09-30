@@ -1,8 +1,8 @@
-# Install agy-retry-hud v0.4.5
+# Install agy-retry-hud v0.4.2
 
 ## Recommended — plugin-only archive
 
-Extract `agy-retry-hud-plugin-v0.4.5.zip`, then:
+Extract `agy-retry-hud-plugin-v0.4.2.zip`, then:
 
 ```bash
 node ./agy-retry-hud/setup.js install
@@ -42,7 +42,7 @@ Expected plugin skills:
 
 ## Full project archive
 
-From the v0.4.5 source root:
+From the v0.4.2 source root:
 
 ```bash
 node ./src/setup.js install

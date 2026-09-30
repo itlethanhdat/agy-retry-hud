@@ -60,7 +60,14 @@ export function mergeStatusline(root,payload,now=Date.now()){
  const snap=snapshotFromStatusline(payload,now);const telemetry={schemaVersion:1,conversationId:snap.conversationId,cwd:snap.cwd,model:snap.model,snapshot:snap.snapshot,updatedAt:now};const previous=loadTelemetry(root,snap.conversationId);
  const stable=x=>JSON.stringify({schemaVersion:x?.schemaVersion,conversationId:x?.conversationId,cwd:x?.cwd,model:x?.model,snapshot:x?.snapshot?{...x.snapshot,observedAt:0}:null});
  if(!previous||stable(previous)!==stable(telemetry)||now-(previous.updatedAt||0)>=5000)atomicJSON(telemetryFile(root,snap.conversationId),telemetry);
- const retry=loadNative(root,snap.conversationId);return retry?{...retry,cwd:retry.cwd||snap.cwd,model:retry.model||snap.model,snapshot:snap.snapshot}:snap;
+ const retry=loadNative(root,snap.conversationId);
+ // v0.4.5 could persist PAUSED_UNCERTAIN when a Stop hook fired while AGY still
+ // had background work. That state has no retry incident/timer and is safe to
+ // clear once native telemetry for the same conversation is observed again.
+ if(retry&&retry.status==='PAUSED_UNCERTAIN'&&!activeIncident(retry)&&retry.nextRetryAt==null&&retry.reason==='stop hook fired while background work is still active'){
+  retry.status='IDLE';retry.reason='stale non-idle Stop marker cleared after native session telemetry resumed';retry.errorFingerprint='';saveNative(root,retry);
+ }
+ return retry?{...retry,cwd:retry.cwd||snap.cwd,model:retry.model||snap.model,snapshot:snap.snapshot}:snap;
 }
 function fmtMs(ms){
  const s=Math.max(0,Math.ceil(ms/1000)),d=Math.floor(s/86400),h=Math.floor(s/3600)%24,m=Math.floor(s/60)%60,sec=s%60;
@@ -126,7 +133,8 @@ function retryDisplay(state,now,color,controls){
  const override=controls?.retryOverride ?? state?.retryOverride ?? 'inherit';
  if(!enabled)return ansi('90','retry:OFF',color);
  if(state?.status==='WEEKLY_BLOCKED')return ansi('91','retry:WEEKLY BLOCK',color);
- if(state?.status==='NEEDS_USER'||state?.status==='PAUSED_UNCERTAIN')return ansi('91','retry:NEEDS USER',color);
+ if(state?.status==='NEEDS_USER')return ansi('91','retry:NEEDS USER',color);
+ if(state?.status==='PAUSED_UNCERTAIN')return ansi('93','retry:UNCERTAIN',color);
  const incident=state?.retryIncident;
  if(incident?.status==='RESOLVED'&&Number.isFinite(incident.resolvedAt)&&now-incident.resolvedAt<60000)return ansi('92','retry:RESOLVED',color);
  if(incident?.status==='SUPERSEDED'&&Number.isFinite(incident.supersededAt)&&now-incident.supersededAt<60000)return ansi('90','retry:SUPERSEDED',color);
@@ -272,7 +280,12 @@ export function scheduleFromStop(root,payload,{now=Date.now(),config={},controlC
  const telemetry=loadTelemetry(root,id);let state=loadNative(root,id)||newNativeState(id,telemetry,payload,now);
  if(telemetry){state.snapshot=telemetry.snapshot;state.cwd=state.cwd||telemetry.cwd;state.model=state.model||telemetry.model;}
  const ctl=controlConfig||loadControlConfig(),controls=applyControlState(root,state,ctl);
- if(payload.fullyIdle===false){state.status='PAUSED_UNCERTAIN';state.reason='stop hook fired while background work is still active';saveNative(root,state);return {decision:'stop',scheduled:false,reason:state.reason};}
+ if(payload.fullyIdle===false){
+  // A non-idle Stop can occur while AGY still has background/subagent work. It
+  // is not a retry failure and must not poison the conversation with an
+  // uncertainty state. Defer retry classification until a fully-idle Stop.
+  return {decision:'stop',scheduled:false,deferred:true,reason:'native AGY still has background work; retry decision deferred'};
+ }
  let c=classifyStop(payload,now);
  if(c.kind==='none'){
   if(ctl.retry.autoDisarmIncidentOnSuccess!==false&&activeIncident(state))setIncidentStatus(state,'RESOLVED',now,{resolvedAt:now,resolution:'normal_stop',resolvedExecutionNum:incidentSequence(payload)});
@@ -296,8 +309,16 @@ export function scheduleFromStop(root,payload,{now=Date.now(),config={},controlC
 export function scheduleFromPreInvocation(root,payload,{now=Date.now(),controlConfig}={}){
  const id=payload?.conversationId;if(!validConversation(id))return {decision:'allow',superseded:false,reason:'missing conversation id'};
  if(process.env.AGY_RETRY_NATIVE_WORKER==='1'||process.env.AGY_RETRY_HANDOFF_WORKER==='1'||process.env.AGY_RETRY_ROLLOVER_WORKER==='1')return {decision:'allow',superseded:false,reason:'nested worker'};
- const state=loadNative(root,id);if(!state||!activeIncident(state))return {decision:'allow',superseded:false,reason:'no active retry incident'};
+ const state=loadNative(root,id);if(!state)return {decision:'allow',superseded:false,reason:'no native retry state'};
  const ctl=controlConfig||loadControlConfig();applyControlState(root,state,ctl);
+ const incident=activeIncident(state);
+ if(!incident){
+  if(state.status==='PAUSED_UNCERTAIN'&&state.nextRetryAt==null&&state.reason==='stop hook fired while background work is still active'){
+   state.status='IDLE';state.reason='new AGY invocation cleared stale non-idle Stop marker';state.errorFingerprint='';saveNative(root,state);
+   return {decision:'allow',superseded:false,recovered:true,reason:state.reason};
+  }
+  return {decision:'allow',superseded:false,reason:'no active retry incident'};
+ }
  const incidentId=state.retryIncident.id;setIncidentStatus(state,'SUPERSEDED',now,{supersededAt:now,supersededBy:'new_invocation',invocationNum:Number.isInteger(payload?.invocationNum)?payload.invocationNum:null});
  state.status='IDLE';state.reason='new AGY invocation superseded pending auto-retry';state.nextRetryAt=null;state.errorFingerprint='';saveNative(root,state);
  return {decision:'allow',superseded:true,reason:state.reason,incidentId};

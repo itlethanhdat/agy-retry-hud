@@ -1,3 +1,13 @@
+# v0.4.6
+
+- Fixed stale `PAUSED_UNCERTAIN` state after resuming a conversation that previously received a non-idle Stop while background/subagent work was active.
+- `Stop + fullyIdle=false` now defers retry classification and does not create a retry incident or `PAUSED_UNCERTAIN`.
+- Status-line telemetry self-heals the exact legacy v0.4.5 non-idle Stop marker when the same conversation is resumed.
+- `PreInvocation` also clears that legacy marker when a new turn starts.
+- HUD now distinguishes genuine `retry:UNCERTAIN` from `retry:NEEDS USER`.
+- `agy-retryctl retry status --json` now includes the native retry `reason`.
+- Added regression coverage for resume-without-subagent, legacy-state self-healing, and HUD state separation. Full offline suite: 99 tests.
+
 # v0.4.5
 
 - Added **Stale Retry Protection / Retry Incident Lifecycle** so quota recovery in one conversation cannot wake unrelated or already-finished conversations.

@@ -1,285 +1,373 @@
-# AGY Retry HUD v0.4.5
+# AGY Retry HUD v0.4.6
 
-Native HUD + Policy-Controlled Auto Retry + Portable Handoff for the **Google Antigravity CLI (`agy`)**.
+Native HUD + policy-controlled Auto Retry + Portable Handoff cho **Antigravity CLI (`agy`)**.
 
-[English](README.md) | [Tiếng Việt](README.vi.md) | [Build Guide](BUILD.md)
+`agy-retry-hud` giữ nguyên TUI gốc của AGY. Plugin dùng native status line để hiển thị context/quota/trạng thái, Stop hook để phát hiện lỗi, worker nền để retry có kiểm soát, và `agy-retryctl` + plugin skills để quản lý retry/handoff.
 
----
+> **Release status:** v0.4.6 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
 
-`agy-retry-hud` enhances your Antigravity workflow while **strictly preserving the native AGY TUI**. It uses the native status line to display context, 5-hour quota, and weekly quota metrics; a native `Stop` hook to track errors; a background worker for controlled retries; and the `agy-retryctl` CLI plus plugin skills for manual/automatic task handoffs.
+## Tính năng chính
 
-> **Release Status (v0.4.5):** Implementation complete and offline-verified. Target runtime is Node.js 24.x, and target AGY version is 1.2.14. Native Windows status-line command wiring includes PowerShell-encoded quoting safety. Live authenticated AGY runs on macOS/Windows are evaluated against release gates without counting synthetic offline tests as live verification.
+- Native HUD ngay trong `agy`, không thay TUI.
+- 5h + weekly quota cùng một dòng khi terminal đủ rộng; adaptive fallback khi hẹp.
+- Retry global ON/OFF và override riêng conversation: `inherit | on | off`.
+- “Retry only this session”: global OFF + conversation override ON.
+- Weekly quota `<= 1%` là **hard block**: không tự retry, không wake theo vòng 5h.
+- Retry transient API + eligible 5h quota với deadline/backoff, lock và dedupe.
+- Stale Retry Protection: retry intent is bound to the exact conversation/failed incident; a newer successful Stop or model invocation automatically disarms the old retry.
+- Auto handoff: warning 80%, mechanical snapshot 85%, semantic prepare 90%, rollover 95%.
+- Native compaction kéo context xuống dưới 80% sẽ hủy rollover đang arm.
+- Manual handoff bằng skill `/agy-retry-hud:handoff`.
+- Continue handoff bằng `/agy-retry-hud:continue-handoff`.
+- Portable `.agyh` chạy được trên thiết bị/path/conversation khác.
+- Handoff không phụ thuộc source conversation ID hay absolute workspace path.
+- Git workspace identity + checksum + ZIP path-traversal protection + secret blocking.
+- Skills được package trong plugin và discover qua `/skills`.
 
----
+## HUD v0.4
 
-## Key Features
-
-- **Native HUD in `agy`**: Rendered directly in AGY's status line without taking over or wrapping the terminal TUI.
-- **Combined Dual Quota Display**: 5-hour and weekly quotas shown on a single line on wide terminals; adaptive fallback on narrow terminals.
-- **Granular Retry Policies**: Global ON/OFF and conversation-level override (`inherit | on | off`).
-- **"Retry Only This Session"**: Configure global OFF with conversation override ON.
-- **Weekly Quota Hard Block**: When weekly quota is `≤ 1%`, automatic retry is permanently blocked to prevent exhausting accounts.
-- **Safe API & Quota Backoff**: Automatic backoff with deadlines, locks, and deduplication for transient API errors and eligible 5h quota resets.
-- **Stale Retry Protection**: Retry intents are bound to the exact conversation and incident; any newer turn or successful Stop automatically disarms old retries.
-- **Graduated Auto-Handoff**: Warning at 80%, mechanical snapshot at 85%, semantic summary at 90%, rollover at 95%.
-- **Context Compaction Awareness**: Native AGY context compaction dropping below 80% automatically disarms armed rollovers.
-- **Manual & Portable Handoff**: Export task checkpoints to standalone portable `.agyh` archives across directories or machines.
-- **Cross-Device Portability**: Handoffs do not depend on source absolute paths or original conversation IDs.
-- **Security & Integrity**: Git workspace identity, SHA-256 checksums, ZIP path-traversal prevention, and automatic secret pattern redaction.
-- **Native Skills**: Bundled skills discovered via `/skills` inside AGY (`/agy-retry-hud:retry`, `/agy-retry-hud:handoff`, etc.).
-
----
-
-## HUD Layouts
-
-### Wide Terminal (≥ 90 columns)
+Wide terminal:
 
 ```text
-╭─ ● WORKING │ Gemini 3.8 Flash (High) │ Pro │ git:main*
+╭─ ● WORKING │ Gemini 3.7 Flash (Medium) │ Pro │ git:main*
 ├─ ctx   █████████░ 91% used 910k/1M     │ handoff:READY
 ╰─ quota 5h ███░░░░ 19% ↻ 1h55m │ week ████░░░ 44% ↻ 1d20h │ retry:SESSION
 ```
 
-### Compact HUD (Default in v0.4.5)
+Narrow terminal:
 
 ```text
-╭─ ● READY │ Gemini 3.8 Flash (High) │ Pro │ retry:ON │ handoff:OFF
-╰─ ctx █░░░░░░░ 4% 40k/1M │ 5h ████████ 99% ↻ 4h49m │ week █░░░░░░░ 6% ↻ 19h38m
-```
-
-### Narrow Terminal (< 90 columns)
-
-```text
-╭─ ● READY │ Gemini 3.8 Flash │ Pro
+╭─ ● READY │ Gemini 3.7 Flash │ Pro
 ├─ ctx  █████████░ 91% │ handoff:READY
 ├─ 5h   ███░░░░░░ 19% ↻ 1h55m
 ╰─ week ████░░░░░ 44% ↻ 1d20h
 ```
 
-Column alignment uses true terminal display width calculations (handling Unicode glyphs and ANSI colors) so borders never misalign.
+Renderer căn theo **terminal display width** thay vì `string.length`, nên ANSI color/Unicode/progress bar không làm lệch cột. Reset luôn có khoảng cách `↻ 1h55m`, không dính `↻1h55m`.
 
----
+## Yêu cầu
 
-## Requirements
+- Node.js **24.x**.
+- Antigravity CLI `agy`; known target v0.4: **1.2.14**.
+- `agy` đã đăng nhập trên máy dùng live features.
+- Linux/macOS/Windows.
 
-- **Node.js**: `24.x` (target: Node `24.21.0` or `>=24 <25`).
-- **Antigravity CLI**: `agy` (tested on `1.2.14`).
-- **OS**: Linux, macOS, or Windows (PowerShell 5.1+ or PowerShell 7+).
-- **Dependencies**: Zero runtime third-party npm packages.
+Không có npm runtime dependency.
 
----
+## Cài đặt khuyến nghị
 
-## Quick Start & Installation
-
-### Recommended: Plugin-Only Archive
-
-Download and extract `agy-retry-hud-plugin-v0.4.5.zip`, then execute:
+Tải và giải nén **plugin-only archive**, sau đó:
 
 ```bash
 node ./agy-retry-hud/setup.js install
 ```
 
-The installer will:
-1. Validate the plugin with `agy plugin validate`.
-2. Install the plugin into AGY plugins directory.
-3. Wire the native `statusLine` configuration safely.
-4. Wire `Stop` and `PreInvocation` hooks.
-5. Create the `agy-retryctl` command launcher in PATH.
+Installer sẽ:
 
-If you already use a custom status line and want to replace it:
+1. `agy plugin validate`;
+2. `agy plugin install`;
+3. tìm plugin đã stage;
+4. wire native `statusLine`;
+5. giữ nguyên AGY settings khác;
+6. tạo launcher `agy-retryctl`.
+
+Nếu đã có HUD khác, installer không ghi đè trừ khi dùng:
 
 ```bash
 node ./agy-retry-hud/setup.js install --force-statusline
 ```
 
-Restart `agy`, then verify:
+Sau đó restart:
+
+```bash
+agy
+```
+
+Kiểm tra:
 
 ```bash
 agy-retryctl retry status
 agy-retryctl handoff status
 ```
 
-Inside AGY, run:
+Trong AGY:
+
 ```text
 /hooks
 /skills
 ```
 
----
 
-### Installing from Source Repository
+### Windows status-line wiring
+
+On native Windows, v0.4.2 no longer writes a direct command such as:
+
+```text
+node "C:\\Users\\...\\native-entry.js" statusline
+```
+
+AGY 1.2.14 can preserve those quote characters while splitting the command, causing Node to resolve a bogus path relative to the current workspace. v0.4.2 writes a quote-safe PowerShell `-EncodedCommand` launcher instead. The encoded launcher reads AGY status-line JSON from stdin and forwards it to the installed Node runtime, so paths containing spaces are safe as well. The installed Stop hook is rewritten with the same Windows-safe launcher.
+
+If upgrading from v0.4.0, rerun:
+
+```powershell
+node .\agy-retry-hud\setup.js install --force-statusline
+```
+
+then start a fresh `agy` session.
+
+### Full source archive
+
+Nếu dùng full project:
 
 ```bash
-git clone https://github.com/itlethanhdat/agy-retry-hud.git
-cd agy-retry-hud
 node ./src/setup.js install
 ```
 
-The installer automatically detects the nested plugin directory `./plugin/agy-retry-hud`.
+Setup tự nhận plugin root `./plugin/agy-retry-hud`.
 
----
-
-## Building from Source
-
-To build, verify, and run the test suite:
+## Retry controls
 
 ```bash
-# 1. Build plugin dist bundle
-npm run build:plugin
-
-# 2. Verify plugin package structure and schemas
-npm run verify:plugin-package
-
-# 3. Run automated unit and integration tests
-npm test
-```
-
-For comprehensive packaging and build details, see [BUILD.md](BUILD.md).
-
----
-
-## Retry Controls
-
-Control retry behavior via CLI or in-session skills:
-
-```bash
-# Global configuration
+# Global
 agy-retryctl retry on
 agy-retryctl retry off
 agy-retryctl retry status
 
-# Current conversation override
+# Current AGY conversation
 agy-retryctl retry session on
 agy-retryctl retry session off
 agy-retryctl retry session inherit
 ```
 
-### "Only This Session" Mode
-
-To prevent unexpected retries across other tasks while enabling retry for the active conversation:
+“Only this session”:
 
 ```bash
 agy-retryctl retry off
 agy-retryctl retry session on
 ```
 
-Or using the AGY skill:
+Skill tương ứng:
 
 ```text
+/agy-retry-hud:retry
+/agy-retry-hud:retry on
+/agy-retry-hud:retry off
 /agy-retry-hud:retry session on
+/agy-retry-hud:retry status
 ```
 
-### Weekly Quota Hard Block
-
-When weekly quota drops to `≤ 1%`, the status line indicates:
+Weekly quota còn `<= 1%` mặc định chuyển sang:
 
 ```text
 retry:WEEKLY BLOCK
 ```
 
-The background worker will not dispatch any prompt turns until quota has replenished.
+và worker **không gửi model turn**. Nếu weekly telemetry stale/unknown trước quota retry, worker chỉ cho phép read-only refresh; vẫn unknown thì `NEEDS_USER`.
 
----
 
-## Stale Retry Protection & Incident Lifecycle
+## v0.4.6 stale uncertainty self-healing
 
-Retries are strictly tied to a specific unresolved incident in the exact conversation:
+A `Stop` event with `fullyIdle=false` means AGY still has native/background work. v0.4.6 no longer turns that event into `PAUSED_UNCERTAIN`; retry classification is deferred until a fully-idle Stop.
 
-```text
-API / Quota Error
-  → Create incident: WAITING
-  → Newer successful Stop event       => Incident RESOLVED (no retry)
-  → Newer user turn / PreInvocation   => Incident SUPERSEDED (no retry)
-  → Worker timeout / stale ID         => Disarmed as STALE_RETRY
-  → Incident valid + quota healthy    => Dispatch retry turn
-```
+When upgrading from v0.4.5, a conversation that already contains the legacy reason `stop hook fired while background work is still active` is self-healed to `IDLE` as soon as status-line telemetry for the same conversation appears again. A genuine uncertain background retry remains visible as `retry:UNCERTAIN`, while only actual user-action states render as `retry:NEEDS USER`.
 
-Both `Stop` and `PreInvocation` hooks coordinate to prevent phantom retries when you continue working or start another task.
+`agy-retryctl retry status --json` now includes `reason` for diagnostics.
 
----
+## Stale Retry Protection / Incident Lifecycle
 
-## Task Handoff & Rollover
+Retry không được kích hoạt chỉ vì quota của account đã reset. Mỗi retry phải có một **incident đang còn hiệu lực** của đúng conversation.
 
-### Default Thresholds
+Lifecycle chính:
 
 ```text
-80%  Warning indicator in status line
-85%  Mechanical state snapshot
-90%  Semantic handoff summary prepared
-95%  Rollover eligible (safe point required: idle agent, no pending confirmation)
-<80% Armed rollover canceled (after AGY native context compaction)
+API/quota error
+→ retry incident WAITING
+→ normal Stop/SUCCESS mới hơn     => RESOLVED, không retry
+→ PreInvocation/manual turn mới   => SUPERSEDED, không retry
+→ worker cũ / incident id cũ      => STALE_RETRY, không gửi prompt
+→ incident vẫn current + đủ gate  => dispatch đúng conversation
 ```
 
-### Manual Handoff
+Ví dụ hai session:
 
-Inside AGY:
+```text
+Session A: công việc đã hoàn tất, retry incident = none/resolved
+Session B: quota/API error, retry incident = WAITING
+quota reset → chỉ B được xem xét retry; A không nhận `continue`
+```
+
+Mặc định:
+
+```json
+{
+  "retry": {
+    "autoDisarmIncidentOnSuccess": true,
+    "requireCurrentIncidentBeforeDispatch": true
+  }
+}
+```
+
+Plugin dùng cả `Stop` và `PreInvocation` hooks để vô hiệu hóa retry cũ khi conversation đã có tiến triển mới.
+
+## Auto handoff controls
+
+```bash
+# Global
+agy-retryctl handoff on
+agy-retryctl handoff off
+agy-retryctl handoff status
+
+# Current conversation
+agy-retryctl handoff session on
+agy-retryctl handoff session off
+agy-retryctl handoff session inherit
+```
+
+Skill `/agy-retry-hud:handoff` cũng hiểu yêu cầu bật/tắt auto-handoff và ánh xạ về `agy-retryctl`.
+
+### Threshold mặc định
+
+```text
+80%  warning
+85%  mechanical snapshot
+90%  semantic handoff preparation
+95%  rollover eligible
+<80% cancel armed rollover after native AGY compaction
+```
+
+Handoff/rollover chỉ chạy tại safe point: agent idle, không task, không pending input, không tool confirmation và không unresolved side effect.
+
+## Manual handoff
+
+Trong AGY:
+
 ```text
 /agy-retry-hud:handoff
+```
+
+Portable:
+
+```text
 /agy-retry-hud:handoff portable
 ```
 
-Via CLI:
+Hoặc deterministic CLI:
+
 ```bash
 agy-retryctl handoff create
 agy-retryctl handoff create --portable
 ```
 
-To include untracked work-in-progress files:
+Để đưa selected untracked work-in-progress vào bundle, phải chỉ định tường minh từng file:
+
 ```bash
 agy-retryctl handoff create --portable \
-  --include-untracked notes.md \
-  --include-untracked src/patch.js
+  --include-untracked notes.txt \
+  --include-untracked src/new-file.js
 ```
 
-### Resuming Work on Another Device
+Plugin không tự pack toàn bộ untracked files. `.env`, key/credential paths, binary untracked files và text có secret patterns bị chặn.
 
-1. On **Device A**:
-   ```bash
-   agy-retryctl handoff create --portable
-   # Output: myproject-<handoff-id>.agyh
-   ```
-2. Copy `.agyh` to **Device B**.
-3. Open the target git repository and run:
-   ```text
-   /agy-retry-hud:continue-handoff /path/to/myproject-<handoff-id>.agyh
-   ```
-   Or via CLI:
-   ```bash
-   agy-retryctl handoff import /path/to/myproject-<handoff-id>.agyh
-   ```
+## Portable `.agyh`
 
----
+Local handoff nằm dưới:
 
-## Bundled Skills
+```text
+.agy-retry/handoffs/<handoff-id>/
+```
 
-| Skill | Description |
-|---|---|
-| `/agy-retry-hud:retry` | Configure or toggle retry policies globally or per session |
-| `/agy-retry-hud:retry-status` | Display effective retry status and quota details |
-| `/agy-retry-hud:handoff` | Create manual local or portable task handoff checkpoints |
-| `/agy-retry-hud:continue-handoff` | Resume work from a local handoff or `.agyh` file |
-| `/agy-retry-hud:handoff-status` | View recent handoff checkpoints and thresholds |
-| `/agy-retry-hud:setup` | Verify and repair plugin status line, hooks, and launcher |
+Portable artifact:
 
----
+```text
+<project>-<handoff-id>.agyh
+```
 
-## Configuration
+Bundle v1 chứa `manifest.json`, `HANDOFF.md`, `CONTINUE.md`, workspace identity, state, Git status/diff, selected WIP, test evidence và checksums.
 
-Default location:
-- **Linux/macOS**: `~/.config/agy-retry-hud/config.json`
-- **Windows**: `%APPDATA%\agy-retry-hud\config.json`
-- Custom path via environment variable: `AGY_RETRY_HUD_CONFIG`
+Handoff chỉ dùng source conversation ID như provenance. Nó **không cần** conversation cũ để continue.
 
-Example configuration (`config.example.json`):
+Absolute path source cũng chỉ là metadata. Repo files trong handoff dùng workspace-relative paths và import rebind theo Git identity.
+
+### Chuyển sang máy khác
+
+Máy A:
+
+```bash
+agy-retryctl handoff create --portable
+```
+
+Copy `.agyh` sang máy B, mở đúng repo tại path bất kỳ, rồi:
+
+```text
+/agy-retry-hud:continue-handoff /path/to/task.agyh
+```
+
+Hoặc:
+
+```bash
+agy-retryctl handoff import /path/to/task.agyh
+agy-retryctl handoff validate /path/to/task.agyh
+```
+
+`continue-handoff` phải reconcile repo/Git/current files trước khi làm tiếp, không blindly tin checkpoint và không repeat confirmed side effects.
+
+## Skills
+
+Plugin package:
+
+```text
+🔁 /agy-retry-hud:retry
+📦 /agy-retry-hud:handoff
+▶️ /agy-retry-hud:continue-handoff
+📋 /agy-retry-hud:handoff-status
+ℹ️ /agy-retry-hud:retry-status
+```
+
+Không truyền handoff cho `continue-handoff` thì skill chạy `agy-retryctl handoff list --json` và trình bày numbered choices. v0.4 không giả lập native picker API nếu AGY không expose API đó.
+
+## Retry + handoff interaction
+
+Ví dụ context 93%, handoff READY, sau đó hết 5h quota:
+
+```text
+WAIT_QUOTA
+  ↓ reset
+check weekly
+  ├─ weekly blocked -> stop, no model send
+  └─ weekly healthy
+       ├─ rollover armed -> new AGY conversation + continue handoff
+       └─ otherwise -> resume exact old conversation
+```
+
+Khi context quá cao, worker ưu tiên safe rollover thay vì tiếp tục bơm vào conversation gần đầy.
+
+## Config
+
+Linux/macOS mặc định:
+
+```text
+~/.config/agy-retry-hud/config.json
+```
+
+Windows:
+
+```text
+%APPDATA%\agy-retry-hud\config.json
+```
+
+Hoặc `AGY_RETRY_HUD_CONFIG`.
+
+Xem `config.example.json`.
+
+Default policy:
 
 ```json
 {
   "retry": {
     "enabled": true,
     "stopWhenWeeklyExhausted": true,
-    "weeklyRemainingThreshold": 0.01,
-    "autoDisarmIncidentOnSuccess": true,
-    "requireCurrentIncidentBeforeDispatch": true
+    "weeklyRemainingThreshold": 0.01
   },
   "handoff": {
     "enabled": true,
@@ -290,31 +378,100 @@ Example configuration (`config.example.json`):
     "autoCreateNewSession": true,
     "semanticSummary": true,
     "mechanicalFallback": true
-  },
-  "hud": {
-    "compact": true
   }
 }
 ```
 
----
+## Security model
 
-## Diagnostics & Doctor
+- Imported `.agyh` là untrusted input.
+- ZIP path traversal bị reject.
+- Checksums được verify.
+- Unsupported format/version bị reject.
+- Secret patterns và sensitive paths bị block khi export/import.
+- Prompt không được shell-interpolate.
+- Không tự approve permission.
+- Không tự switch account để né quota.
+- Không copy full transcript vào handoff.
 
-Run the health check after installation:
+## Doctor
+
+Sau install:
+
+```bash
+node ~/.gemini/antigravity-cli/plugins/agy-retry-hud/setup.js doctor
+```
+
+Nếu AGY stage shared plugin ở `~/.gemini/config/plugins/`, dùng path đó.
+
+Doctor kiểm tra Node, plugin, status line, five skills, portable schema và `agy-retryctl` launcher. Doctor không tạo model turn.
+
+## Development verification
+
+```bash
+npm test
+npm run verify:plugin-package
+node src/cli.js demo --plain --data-dir .demo-state
+node src/retryctl.js --help
+npm run verify:live
+```
+
+`verify:live` chỉ chạy read-only probes và không cố tiêu quota để tạo lỗi.
+
+Offline suite hiện tại: **80/80 PASS**.
+
+CI matrix đã cấu hình Node 24.21.0 trên Ubuntu/macOS/Windows. Việc CI được cấu hình không được xem là live platform evidence cho tới khi runner thực sự chạy.
+
+## Tài liệu thiết kế
+
+- `spec.md` — approved product/technical spec v0.4.0.
+- `plan.md` — implementation plan WS0–WS12 + execution status.
+- `docs/V0.4-EXECUTION.md` — execution evidence và external release gates.
+
+## Giới hạn đã chủ động giữ
+
+- Không thay AGY TUI.
+- Không giả lập keyboard/PTY để ép TUI switch conversation.
+- Không thay thuật toán native context compaction của AGY.
+- Không tự retry khi weekly quota bị block.
+- Không tự kết luận uncertain tool side effect là thành công/thất bại.
+- Không hứa current TUI tự nhảy sang background rollover conversation; new conversation ID được lưu để resume/open lại.
+
+## v0.4.2 HUD and setup skill
+
+The native HUD uses a fixed visual metric grid. Context and quota percentages change color by severity, and 5h/weekly quota share one row when the terminal is wide enough.
+
+Use the new setup skill inside AGY:
+
+```text
+/agy-retry-hud:setup
+```
+
+Or use the deterministic control plane:
 
 ```bash
 agy-retryctl setup status --json
-```
-
-Or run repair to restore missing hook or status line entries:
-
-```bash
 agy-retryctl setup repair --json
 ```
 
----
+`setup repair` restores missing agy-retry-hud statusline wiring, Stop hook wiring, the `agy-retryctl` launcher and a missing default config. It does not silently overwrite an unrelated custom statusline; use `--force-statusline` only after explicit approval.
 
-## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+## v0.4.4 compact HUD and setup-skill discovery
+
+Compact HUD is enabled by default and normally uses two terminal rows:
+
+```text
+╭─ ● READY │ Gemini 3.8 Flash (High) │ Pro │ retry:ON │ handoff:OFF
+╰─ ctx █░░░░░░░ 4% 40k/1M │ 5h ████████ 99% ↻ 4h49m │ week █░░░░░░░ 6% ↻ 19h38m
+```
+
+To restore the previous detailed layout, set `hud.compact` to `false` in the agy-retry-hud config.
+
+If `/agy-retry-hud:setup` is missing from `/skills`, run the packaged repair once from the shell:
+
+```bash
+node <installed-plugin>/setup.js repair
+```
+
+The repair reports `installLocation`, `sharedConfigStaged`, `cliStaged`, and `skillsDiscoverable`. Current AGY releases may install global plugins under the shared `~/.gemini/config/plugins/agy-retry-hud` path; some builds/documentation also use `~/.gemini/antigravity-cli/plugins/agy-retry-hud`. v0.4.4 accepts either supported global discovery path and wires the HUD to the path AGY actually installed.

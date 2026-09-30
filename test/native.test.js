@@ -33,7 +33,7 @@ test('normal native Stop cancels a pending retry to avoid duplicate dispatch aft
 test('Stop hook never schedules auth/unknown or non-idle background work',()=>{
  const root=temp(),now=1000000;mergeStatusline(root,payload({quota:{}}),now);
  let n=0;let r=scheduleFromStop(root,{terminationReason:'error',error:'401 unauthenticated',fullyIdle:true,conversationId:conv},{now,spawnWorker:()=>n++});assert.equal(r.scheduled,false);assert.equal(loadNative(root,conv).status,'NEEDS_USER');
- r=scheduleFromStop(root,{terminationReason:'error',error:'503 service unavailable',fullyIdle:false,conversationId:conv},{now,spawnWorker:()=>n++});assert.equal(r.scheduled,false);assert.equal(loadNative(root,conv).status,'PAUSED_UNCERTAIN');assert.equal(n,0);
+ r=scheduleFromStop(root,{terminationReason:'error',error:'503 service unavailable',fullyIdle:false,conversationId:conv},{now,spawnWorker:()=>n++});assert.equal(r.scheduled,false);assert.equal(r.deferred,true);assert.equal(loadNative(root,conv).status,'NEEDS_USER');assert.equal(n,0);
 });
 
 test('native worker waits then resumes exact conversation once and records success',async()=>{
@@ -130,4 +130,32 @@ test('mergeStatusline returns ephemeral null before AGY assigns a conversation i
  const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');const p=payload();delete p.conversation_id;
  const state=mergeStatusline(root,p,now);assert.equal(state,null);assert.equal(fs.existsSync(path.join(root,'telemetry')),false);
  const text=renderNativeStatusline(p,state,now,{color:false});assert.match(text,/Gemini Test/);assert.match(text,/ctx .*42%/);
+});
+
+
+test('non-idle Stop never creates PAUSED_UNCERTAIN when no retry incident exists',()=>{
+ const root=temp(),now=8_000_000;mergeStatusline(root,payload({quota:{},agent_state:'working'}),now);let n=0;
+ const r=scheduleFromStop(root,{terminationReason:'error',error:'503 service unavailable',fullyIdle:false,conversationId:conv},{now,spawnWorker:()=>n++});
+ assert.equal(r.scheduled,false);assert.equal(r.deferred,true);const state=loadNative(root,conv);assert.equal(state,null);assert.equal(n,0);
+});
+
+test('statusline resume self-heals the legacy v0.4.5 non-idle PAUSED_UNCERTAIN marker',()=>{
+ const root=temp(),now=9_000_000;let state=mergeStatusline(root,payload({quota:{}}),now);
+ state.status='PAUSED_UNCERTAIN';state.reason='stop hook fired while background work is still active';state.nextRetryAt=null;state.retryIncident=null;saveNative(root,state);
+ const merged=mergeStatusline(root,payload({quota:{},agent_state:'idle'}),now+100);
+ assert.equal(merged.status,'IDLE');assert.match(merged.reason,/stale non-idle Stop marker cleared/i);assert.equal(loadNative(root,conv).status,'IDLE');
+ const hud=renderNativeStatusline(payload({quota:{}}),loadNative(root,conv),now+100,{color:false});assert.match(hud,/retry:ON/);assert.doesNotMatch(hud,/NEEDS USER|UNCERTAIN/);
+});
+
+test('PreInvocation self-heals the legacy non-idle PAUSED_UNCERTAIN marker even without an active incident',()=>{
+ const root=temp(),now=10_000_000;let state=mergeStatusline(root,payload({quota:{}}),now);
+ state.status='PAUSED_UNCERTAIN';state.reason='stop hook fired while background work is still active';state.nextRetryAt=null;state.retryIncident=null;saveNative(root,state);
+ const pre=scheduleFromPreInvocation(root,{conversationId:conv,invocationNum:11},{now:now+100});assert.equal(pre.recovered,true);state=loadNative(root,conv);assert.equal(state.status,'IDLE');assert.equal(state.nextRetryAt,null);assert.equal(state.retryIncident,null);
+});
+
+test('HUD distinguishes genuine PAUSED_UNCERTAIN from NEEDS_USER',()=>{
+ const root=temp(),now=11_000_000;let state=mergeStatusline(root,payload({quota:{}}),now);
+ state.status='PAUSED_UNCERTAIN';state.reason='background AGY retry/rollover outcome uncertain';state.retryIncident={id:'ri-test',conversationId:conv,status:'PAUSED_UNCERTAIN',kind:'transient',fingerprint:'x',createdAt:now,updatedAt:now};saveNative(root,state);
+ const uncertain=renderNativeStatusline(payload({quota:{}}),loadNative(root,conv),now,{color:false});assert.match(uncertain,/retry:UNCERTAIN/);assert.doesNotMatch(uncertain,/retry:NEEDS USER/);
+ state.status='NEEDS_USER';state.reason='weekly quota unavailable before quota retry';saveNative(root,state);const needs=renderNativeStatusline(payload({quota:{}}),loadNative(root,conv),now,{color:false});assert.match(needs,/retry:NEEDS USER/);
 });
