@@ -1499,3 +1499,24 @@ Default config:
   }
 }
 ```
+
+
+# 42. Exact Conversation Binding & Multi-CLI Protection (v0.4.7)
+
+Retry control and dispatch must prefer exact conversation identity over workspace recency.
+
+Resolution order for local `agy-retryctl` commands:
+
+1. explicit `--conversation <id>`;
+2. current terminal-instance binding observed by native status-line telemetry;
+3. workspace/cwd latest telemetry as a fallback only.
+
+Status output must expose `conversationResolution` so inferred workspace resolution is visible.
+
+Manual/new model invocation is authoritative over old automation state. `PreInvocation` for the same conversation must supersede `WAIT_QUOTA`, `WAIT_BACKOFF`, `RUNNING`, `NEEDS_USER`, `PAUSED_UNCERTAIN`, or equivalent retry incident state from an older turn, clear `nextRetryAt`, preserve retry policy, and record the old incident as `SUPERSEDED` for audit.
+
+`agy-retryctl retry clear` must invalidate the current incident and clear its retry deadline without setting global or session retry to OFF.
+
+Terminal binding may use stable inherited identifiers such as `TMUX_PANE`, `WT_SESSION`, `WEZTERM_PANE`, `KITTY_WINDOW_ID`, `TERM_SESSION_ID`, `GNOME_TERMINAL_SCREEN`, or `KONSOLE_DBUS_SESSION` when present. Missing identifiers fall back conservatively.
+
+If the same conversation is observed in more than one active terminal/CLI instance within the telemetry liveness window, automatic dispatch is prohibited. State is `MULTI_CLI`, HUD renders `retry:MULTI-CLI`, and workers send zero model messages. A worker must recheck this immediately before retry dispatch, not only when the original Stop was observed.

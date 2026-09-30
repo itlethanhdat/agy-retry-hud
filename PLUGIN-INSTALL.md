@@ -122,3 +122,10 @@ agy-retryctl setup repair --json
 ## Retry incident safety
 
 v0.4.5 installs both `Stop` and `PreInvocation` hooks. `Stop` arms/resolves retry incidents; `PreInvocation` supersedes stale pending retries when the user or AGY starts a newer turn in the same conversation. Run `setup.js repair` after upgrading so both hooks are wired.
+
+
+## v0.4.7 tmux / multiple CLI notes
+
+`agy-retryctl` now prefers exact terminal binding (for example `TMUX_PANE`) before workspace-latest conversation inference. Use `--conversation <id>` for automation when exact identity is known.
+
+If AGY warns that a conversation is already open in another CLI instance, agy-retry-hud blocks automatic retry for that conversation (`retry:MULTI-CLI`) until the duplicate-session conflict is resolved. `agy-retryctl retry clear` clears a stale incident without turning retry off.

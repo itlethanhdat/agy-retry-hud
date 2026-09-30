@@ -962,3 +962,15 @@ This plan is ready for execution.
 - [x] Add Windows quote-safe `PreInvocation` hook command coverage.
 - [x] Package both Stop + PreInvocation hooks in direct-install plugin artifact.
 - [ ] Live AGY 1.2.14 verification of manual continuation superseding a waiting retry remains a live-evidence gate.
+
+
+## v0.4.7 hardening execution update
+
+- [x] Manual PreInvocation supersedes NEEDS_USER and PAUSED_UNCERTAIN state from an older retry incident.
+- [x] Add `retry clear` without disabling retry policy.
+- [x] Add terminal-instance conversation binding before cwd/latest fallback.
+- [x] Report conversation-resolution source from retry status.
+- [x] Detect multiple live CLI instances for the same conversation.
+- [x] Block auto retry at Stop-time and again at worker dispatch-time for multi-CLI conflicts.
+- [x] Render `retry:MULTI-CLI`.
+- [x] Add focused regression tests and run full suite.

@@ -2,15 +2,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {parseArgs} from 'node:util';
-import {nativeRoot,loadNative} from './native.js';
+import {nativeRoot,loadNative,loadTelemetry,terminalInstanceBinding,activeTerminalInstances,clearRetryState} from './native.js';
 import {loadControlConfig,saveControlConfig,controlConfigPath,setConversationOverride,getConversationOverride,effectiveControls,updateGlobal} from './control.js';
 import {createHandoff,finalizeSemanticHandoff,listHandoffs,loadHandoff,exportHandoff,importHandoff,inspectPortable,validateWorkspace,handoffSummary,markConsumed} from './handoff.js';
 import {setupDoctor,repairSetup} from './setup.js';
 
-const HELP=`agy-retryctl v0.4.5
+const HELP=`agy-retryctl v0.4.7
   agy-retryctl setup status
   agy-retryctl setup repair [--force-statusline]
   agy-retryctl retry on|off|status
+  agy-retryctl retry clear [--conversation ID]
   agy-retryctl retry session on|off|inherit [--conversation ID]
   agy-retryctl handoff on|off|status
   agy-retryctl handoff session on|off|inherit [--conversation ID]
@@ -27,7 +28,13 @@ Options: --cwd PATH --conversation ID --state-root PATH --config PATH --portable
 function err(m){throw Error(m);}
 function readTelemetry(root){const dir=path.join(root,'telemetry');let files=[];try{files=fs.readdirSync(dir);}catch(e){if(e.code==='ENOENT')return [];throw e;}return files.map(f=>{try{return JSON.parse(fs.readFileSync(path.join(dir,f),'utf8'));}catch{return null;}}).filter(Boolean);}
 function samePath(a,b){try{return fs.realpathSync(a)===fs.realpathSync(b);}catch{return path.resolve(a)===path.resolve(b);}}
-export function resolveConversation(root,{conversation,cwd=process.cwd()}={}){if(conversation)return conversation;const rows=readTelemetry(root).filter(x=>x.conversationId&&x.cwd&&samePath(x.cwd,cwd)).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));if(!rows.length)throw Error('no active/recent AGY conversation found for this workspace; pass --conversation');return rows[0].conversationId;}
+export function resolveConversationInfo(root,{conversation,cwd=process.cwd(),env=process.env,now=Date.now()}={}){
+ const rows=readTelemetry(root),binding=terminalInstanceBinding(env);
+ if(conversation){const telemetry=rows.find(x=>x.conversationId===conversation)||loadTelemetry(root,conversation);return {conversationId:conversation,resolution:'explicit',terminalBinding:binding||null,multiCli:activeTerminalInstances(telemetry,now).length>1,activeTerminalInstances:activeTerminalInstances(telemetry,now).length};}
+ if(binding){const matches=rows.filter(x=>x.conversationId&&x.instances?.[binding]&&Number.isFinite(x.instances[binding].lastSeen)&&now-x.instances[binding].lastSeen<=30000).sort((a,b)=>(b.instances?.[binding]?.lastSeen||0)-(a.instances?.[binding]?.lastSeen||0));if(matches.length){const telemetry=matches[0],instances=activeTerminalInstances(telemetry,now);return {conversationId:telemetry.conversationId,resolution:'terminal',terminalBinding:binding,multiCli:instances.length>1,activeTerminalInstances:instances.length};}}
+ const workspace=rows.filter(x=>x.conversationId&&x.cwd&&samePath(x.cwd,cwd)).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));if(!workspace.length)throw Error('no active/recent AGY conversation found for this workspace; pass --conversation');const telemetry=workspace[0],instances=activeTerminalInstances(telemetry,now);return {conversationId:telemetry.conversationId,resolution:'workspace-latest',terminalBinding:binding||null,multiCli:instances.length>1,activeTerminalInstances:instances.length};
+}
+export function resolveConversation(root,opts={}){return resolveConversationInfo(root,opts).conversationId;}
 function asBool(s){if(s==='on')return true;if(s==='off')return false;err('expected on or off');}
 function output(v,json){process.stdout.write(json?JSON.stringify(v,null,2)+'\n':typeof v==='string'?v+'\n':JSON.stringify(v,null,2)+'\n');}
 async function main(argv=process.argv.slice(2)){
@@ -40,7 +47,8 @@ async function main(argv=process.argv.slice(2)){
  }
  if(group==='retry'){
   if(action==='on'||action==='off'){const c=updateGlobal('retry',asBool(action),{file:cfgFile});output({retry:c.retry.enabled},v.json);return 0;}
-  if(action==='status'){let id;try{id=resolveConversation(root,{conversation:v.conversation,cwd});}catch{}const config=loadControlConfig({file:cfgFile}),data=id?effectiveControls(root,id,{config}):{config,retryOverride:'inherit',retryEnabled:config.retry.enabled},native=id?loadNative(root,id):null,incident=native?.retryIncident||null;output({conversationId:id||null,global:config.retry.enabled,override:data.retryOverride,effective:data.retryEnabled,weeklyThreshold:config.retry.weeklyRemainingThreshold,incident:incident?{id:incident.id,status:incident.status,kind:incident.kind||null,createdAt:incident.createdAt||null,updatedAt:incident.updatedAt||null}:null,nativeStatus:native?.status||null,reason:native?.reason||null,nextRetryAt:native?.nextRetryAt||null},v.json);return 0;}
+  if(action==='status'){let info=null;try{info=resolveConversationInfo(root,{conversation:v.conversation,cwd});}catch{}const id=info?.conversationId,config=loadControlConfig({file:cfgFile}),data=id?effectiveControls(root,id,{config}):{config,retryOverride:'inherit',retryEnabled:config.retry.enabled},native=id?loadNative(root,id):null,incident=native?.retryIncident||null;output({conversationId:id||null,conversationResolution:info?.resolution||null,multiCli:Boolean(info?.multiCli),activeTerminalInstances:info?.activeTerminalInstances||0,global:config.retry.enabled,override:data.retryOverride,effective:data.retryEnabled,weeklyThreshold:config.retry.weeklyRemainingThreshold,incident:incident?{id:incident.id,status:incident.status,kind:incident.kind||null,createdAt:incident.createdAt||null,updatedAt:incident.updatedAt||null}:null,nativeStatus:native?.status||null,reason:native?.reason||null,nextRetryAt:native?.nextRetryAt||null},v.json);return 0;}
+  if(action==='clear'){const info=resolveConversationInfo(root,{conversation:v.conversation,cwd}),out=clearRetryState(root,info.conversationId,{reason:'manual_clear'});output({...out,conversationResolution:info.resolution,multiCli:info.multiCli},v.json);return 0;}
   if(action==='session'){if(!['on','off','inherit'].includes(arg1))err('usage: retry session on|off|inherit');const id=resolveConversation(root,{conversation:v.conversation,cwd});setConversationOverride(root,'retry',id,arg1);const config=loadControlConfig({file:cfgFile}),data=effectiveControls(root,id,{config});output({conversationId:id,override:arg1,effective:data.retryEnabled},v.json);return 0;}
   err('unknown retry command');
  }

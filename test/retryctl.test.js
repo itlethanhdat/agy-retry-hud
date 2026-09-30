@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {spawnSync} from 'node:child_process';
-import {mergeStatusline} from '../src/native.js';
+import {mergeStatusline,scheduleFromStop,loadNative} from '../src/native.js';
+import {resolveConversationInfo} from '../src/retryctl.js';
 function temp(p='agy-ctl-'){return fs.mkdtempSync(path.join(os.tmpdir(),p));}const conv='12345678-abcd-ef01-2345-6789abcdef01';
 test('agy-retryctl controls current workspace session and creates/list handoffs deterministically',()=>{const base=temp(),root=path.join(base,'state'),cwd=path.join(base,'project'),config=path.join(base,'config.json');fs.mkdirSync(cwd,{recursive:true});mergeStatusline(root,{conversation_id:conv,cwd,workspace:{current_dir:cwd},model:{id:'gemini-test'},context_window:{used_percentage:20},quota:{},agent_state:'idle',pending_input_count:0,tool_confirmation_pending:false,terminal_width:100},Date.now());const cli=path.resolve('src/retryctl.js'),env={...process.env,AGY_RETRY_STATE_DIR:path.dirname(root),AGY_RETRY_HUD_CONFIG:config};let r=spawnSync(process.execPath,[cli,'retry','off','--config',config],{cwd,env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);r=spawnSync(process.execPath,[cli,'retry','session','on','--state-root',root,'--config',config,'--json'],{cwd,env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);assert.equal(JSON.parse(r.stdout).effective,true);r=spawnSync(process.execPath,[cli,'handoff','create','--state-root',root,'--config',config,'--json'],{cwd,env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);const h=JSON.parse(r.stdout);assert.ok(h.handoffId);r=spawnSync(process.execPath,[cli,'handoff','list','--state-root',root,'--json'],{cwd,env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);assert.equal(JSON.parse(r.stdout)[0].id,h.handoffId);});
 
@@ -8,4 +9,18 @@ test('agy-retryctl exposes setup status and repair control plane',()=>{
  fs.mkdirSync(path.dirname(pluginDir),{recursive:true});fs.cpSync(path.resolve('plugin/agy-retry-hud'),pluginDir,{recursive:true});
  const cli=path.resolve('src/retryctl.js');let r=spawnSync(process.execPath,[cli,'setup','status','--json'],{env,encoding:'utf8'});assert.equal(r.status,4);let out=JSON.parse(r.stdout);assert.equal(out.installed,true);assert.equal(out.skills.setup,true);
  r=spawnSync(process.execPath,[cli,'setup','repair','--json'],{env,encoding:'utf8'});out=JSON.parse(r.stdout);assert.equal(out.doctor.statuslineWired,true);assert.equal(out.doctor.hooksReady,true);assert.equal(out.doctor.skillsReady,true);
+});
+
+
+test('terminal binding resolves the exact conversation before workspace-latest fallback',()=>{
+ const root=temp('agy-bind-'),cwd=temp('agy-bind-project-'),convB='abcdef12-3456-7890-abcd-ef1234567890',base={cwd,workspace:{current_dir:cwd},model:{id:'gemini-test'},context_window:{used_percentage:20},quota:{},agent_state:'idle',pending_input_count:0,tool_confirmation_pending:false,terminal_width:100};
+ mergeStatusline(root,{...base,conversation_id:conv},1000,{env:{TMUX_PANE:'%1'}});mergeStatusline(root,{...base,conversation_id:convB},2000,{env:{TMUX_PANE:'%2'}});
+ const exact=resolveConversationInfo(root,{cwd,env:{TMUX_PANE:'%1'},now:2500});assert.equal(exact.conversationId,conv);assert.equal(exact.resolution,'terminal');
+ const fallback=resolveConversationInfo(root,{cwd,env:{},now:2500});assert.equal(fallback.conversationId,convB);assert.equal(fallback.resolution,'workspace-latest');
+});
+
+test('agy-retryctl retry clear supersedes the current incident without disabling retry',()=>{
+ const base=temp(),root=path.join(base,'state'),cwd=path.join(base,'project'),config=path.join(base,'config.json'),now=Date.now();fs.mkdirSync(cwd,{recursive:true});const p={conversation_id:conv,cwd,workspace:{current_dir:cwd},model:{id:'gemini-test'},context_window:{used_percentage:20},quota:{},agent_state:'idle',pending_input_count:0,tool_confirmation_pending:false,terminal_width:100};mergeStatusline(root,p,now,{env:{TMUX_PANE:'%1'}});scheduleFromStop(root,{executionNum:1,terminationReason:'error',error:'503 service unavailable',fullyIdle:true,conversationId:conv,workspacePaths:[cwd]},{now,config:{transientBaseMs:1000,transientCapMs:1000,jitterMs:0}});assert.equal(loadNative(root,conv).status,'WAIT_BACKOFF');
+ const cli=path.resolve('src/retryctl.js'),env={...process.env,TMUX_PANE:'%1',AGY_RETRY_STATE_DIR:path.dirname(root),AGY_RETRY_HUD_CONFIG:config};let r=spawnSync(process.execPath,[cli,'retry','clear','--state-root',root,'--config',config,'--json'],{cwd,env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);const out=JSON.parse(r.stdout);assert.equal(out.status,'IDLE');assert.equal(out.incidentStatus,'SUPERSEDED');assert.equal(out.conversationResolution,'terminal');const state=loadNative(root,conv);assert.equal(state.status,'IDLE');assert.equal(state.nextRetryAt,null);
+ r=spawnSync(process.execPath,[cli,'retry','status','--state-root',root,'--config',config,'--json'],{cwd,env,encoding:'utf8'});const status=JSON.parse(r.stdout);assert.equal(status.effective,true);assert.equal(status.conversationResolution,'terminal');
 });

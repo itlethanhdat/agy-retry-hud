@@ -1,3 +1,13 @@
+# v0.4.7
+
+- Manual/new AGY `PreInvocation` now supersedes stale `NEEDS_USER`, `PAUSED_UNCERTAIN`, waiting, or dispatching retry state for the same conversation and clears `nextRetryAt` without disabling retry.
+- Added `agy-retryctl retry clear [--conversation ID]` to invalidate only the current retry incident while preserving global/session retry policy.
+- `agy-retryctl retry status --json` now reports `conversationResolution`, `multiCli`, and active terminal-instance count.
+- Added terminal-instance binding before cwd fallback; tmux uses `TMUX_PANE`, with supported hints for Windows Terminal, WezTerm, Kitty, Terminal.app, GNOME Terminal, and Konsole.
+- Added multi-CLI protection: if the same conversation is live in multiple terminal instances, retry becomes `MULTI_CLI` and background workers send zero model messages.
+- Worker rechecks multi-CLI state at dispatch time, covering a duplicate CLI opened after a retry was already scheduled.
+- Added regression coverage for exact tmux conversation resolution, manual supersede of NEEDS_USER/PAUSED_UNCERTAIN, retry clear, immediate multi-CLI block, and deadline-time multi-CLI block. Full offline suite: 104 tests.
+
 # v0.4.6
 
 - Fixed stale `PAUSED_UNCERTAIN` state after resuming a conversation that previously received a non-idle Stop while background/subagent work was active.

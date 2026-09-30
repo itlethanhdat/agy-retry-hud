@@ -18,7 +18,7 @@ try{
  }else if(cmd==='pre-invocation-hook'){
   const payload=await readStdin();const r=scheduleFromPreInvocation(root,payload);process.stdout.write(JSON.stringify({injectSteps:[],terminationBehavior:''})+'\n');if(process.env.AGY_RETRY_DEBUG==='1')process.stderr.write(JSON.stringify({superseded:r.superseded,reason:r.reason})+'\n');
  }else if(cmd==='worker'){
-  const id=arg('--conversation'),incidentId=arg('--incident');if(!id)throw Error('--conversation required');const r=await runNativeWorker(root,id,{expectedIncidentId:incidentId});process.exitCode=['SUCCEEDED','DUPLICATE_WORKER','RETRY_OFF','WEEKLY_BLOCKED','STALE_RETRY','IDLE'].includes(r?.status)?0:4;
+  const id=arg('--conversation'),incidentId=arg('--incident');if(!id)throw Error('--conversation required');const r=await runNativeWorker(root,id,{expectedIncidentId:incidentId});process.exitCode=['SUCCEEDED','DUPLICATE_WORKER','RETRY_OFF','WEEKLY_BLOCKED','MULTI_CLI','STALE_RETRY','IDLE'].includes(r?.status)?0:4;
  }else if(cmd==='handoff-worker'){
   const id=arg('--conversation');if(!id)throw Error('--conversation required');const r=await runHandoffWorker(root,id);process.exitCode=['SUCCEEDED','IDLE','DUPLICATE_HANDOFF_WORKER'].includes(r?.status)||r?.handoff?.status==='READY'?0:4;
  }else if(cmd==='status'){

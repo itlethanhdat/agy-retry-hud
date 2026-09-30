@@ -1,10 +1,10 @@
-# AGY Retry HUD v0.4.6
+# AGY Retry HUD v0.4.7
 
 Native HUD + policy-controlled Auto Retry + Portable Handoff cho **Antigravity CLI (`agy`)**.
 
 `agy-retry-hud` giữ nguyên TUI gốc của AGY. Plugin dùng native status line để hiển thị context/quota/trạng thái, Stop hook để phát hiện lỗi, worker nền để retry có kiểm soát, và `agy-retryctl` + plugin skills để quản lý retry/handoff.
 
-> **Release status:** v0.4.6 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
+> **Release status:** v0.4.7 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
 
 ## Tính năng chính
 
@@ -165,6 +165,45 @@ retry:WEEKLY BLOCK
 
 và worker **không gửi model turn**. Nếu weekly telemetry stale/unknown trước quota retry, worker chỉ cho phép read-only refresh; vẫn unknown thì `NEEDS_USER`.
 
+
+
+## v0.4.7 exact-conversation and multi-CLI retry safety
+
+Manual AGY activity now always wins over stale automation state. A new `PreInvocation` in the same conversation supersedes retry incidents/states such as `WAIT_QUOTA`, `WAIT_BACKOFF`, `NEEDS_USER`, and `PAUSED_UNCERTAIN`, clears `nextRetryAt`, and returns retry state to `IDLE` without disabling the retry policy.
+
+Clear only the current incident while keeping retry enabled:
+
+```bash
+agy-retryctl retry clear
+```
+
+For scripts or tmux workflows, prefer an exact id when needed:
+
+```bash
+agy-retryctl retry clear --conversation <conversation-id>
+agy-retryctl retry status --conversation <conversation-id> --json
+```
+
+`retry status --json` now reports how the conversation was resolved:
+
+```json
+{
+  "conversationId": "...",
+  "conversationResolution": "explicit|terminal|workspace-latest",
+  "multiCli": false,
+  "activeTerminalInstances": 1
+}
+```
+
+In tmux, `TMUX_PANE` is used to bind the local control command to the conversation currently rendered in that pane before falling back to `cwd + latest telemetry`. Supported terminal-instance hints also include Windows Terminal, WezTerm, Kitty, Terminal.app, GNOME Terminal, and Konsole where their environment identifiers are available.
+
+If the same conversation is observed in more than one active CLI instance, automatic retry is fail-safe blocked:
+
+```text
+retry:MULTI-CLI
+```
+
+No background `continue` is sent until the conflict is resolved by closing/forking the duplicate CLI session or the user manually continues. This complements AGY's own "Conversation already open" warning.
 
 ## v0.4.6 stale uncertainty self-healing
 
@@ -418,7 +457,7 @@ npm run verify:live
 
 `verify:live` chỉ chạy read-only probes và không cố tiêu quota để tạo lỗi.
 
-Offline suite hiện tại: **80/80 PASS**.
+Offline suite hiện tại: **104/104 PASS**.
 
 CI matrix đã cấu hình Node 24.21.0 trên Ubuntu/macOS/Windows. Việc CI được cấu hình không được xem là live platform evidence cho tới khi runner thực sự chạy.
 

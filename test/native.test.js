@@ -159,3 +159,26 @@ test('HUD distinguishes genuine PAUSED_UNCERTAIN from NEEDS_USER',()=>{
  const uncertain=renderNativeStatusline(payload({quota:{}}),loadNative(root,conv),now,{color:false});assert.match(uncertain,/retry:UNCERTAIN/);assert.doesNotMatch(uncertain,/retry:NEEDS USER/);
  state.status='NEEDS_USER';state.reason='weekly quota unavailable before quota retry';saveNative(root,state);const needs=renderNativeStatusline(payload({quota:{}}),loadNative(root,conv),now,{color:false});assert.match(needs,/retry:NEEDS USER/);
 });
+
+test('manual PreInvocation supersedes NEEDS_USER and PAUSED_UNCERTAIN retry states',()=>{
+ const root=temp(),now=12_000_000;mergeStatusline(root,payload({quota:{}}),now);
+ scheduleFromStop(root,{executionNum:4,terminationReason:'error',error:'401 unauthenticated',fullyIdle:true,conversationId:conv},{now});
+ let state=loadNative(root,conv);assert.equal(state.status,'NEEDS_USER');assert.equal(state.retryIncident.status,'NEEDS_USER');
+ let pre=scheduleFromPreInvocation(root,{conversationId:conv,invocationNum:5},{now:now+100});assert.equal(pre.superseded,true);state=loadNative(root,conv);assert.equal(state.status,'IDLE');assert.equal(state.retryIncident.status,'SUPERSEDED');assert.equal(state.nextRetryAt,null);
+ state.status='PAUSED_UNCERTAIN';state.reason='background AGY retry/rollover outcome uncertain';state.retryIncident={id:'ri-uncertain',conversationId:conv,status:'PAUSED_UNCERTAIN',kind:'transient',fingerprint:'x',createdAt:now,updatedAt:now};saveNative(root,state);
+ pre=scheduleFromPreInvocation(root,{conversationId:conv,invocationNum:6},{now:now+200});assert.equal(pre.superseded,true);state=loadNative(root,conv);assert.equal(state.status,'IDLE');assert.equal(state.retryIncident.status,'SUPERSEDED');assert.equal(state.nextRetryAt,null);
+});
+
+test('same conversation in two live terminal instances blocks automatic retry',()=>{
+ const root=temp(),now=13_000_000,p=payload({quota:{}});mergeStatusline(root,p,now,{env:{TMUX_PANE:'%1'}});mergeStatusline(root,p,now+100,{env:{TMUX_PANE:'%2'}});let spawned=0;
+ const out=scheduleFromStop(root,{executionNum:1,terminationReason:'error',error:'503 service unavailable',fullyIdle:true,conversationId:conv},{now:now+200,spawnWorker:()=>spawned++});
+ assert.equal(out.scheduled,false);assert.equal(out.multiCli,true);assert.equal(spawned,0);const state=loadNative(root,conv);assert.equal(state.status,'MULTI_CLI');assert.equal(state.retryIncident.status,'BLOCKED');assert.match(state.reason,/multiple AGY CLI/i);
+ const hud=renderNativeStatusline(p,state,now+200,{color:false});assert.match(hud,/retry:MULTI-CLI/);
+});
+
+test('worker aborts a pending retry if a second CLI instance opens the same conversation before deadline',async()=>{
+ const root=temp(),workspace=temp('agy-project-'),now=14_000_000,p=payload({quota:{}},workspace);mergeStatusline(root,p,now,{env:{TMUX_PANE:'%1'}});let incident='';
+ scheduleFromStop(root,{executionNum:1,terminationReason:'error',error:'503 service unavailable',fullyIdle:true,conversationId:conv,workspacePaths:[workspace]},{now,config:{transientBaseMs:1000,transientCapMs:1000,jitterMs:0,maxJobElapsedMs:60000},spawnWorker:(id,x)=>{incident=x;}});
+ mergeStatusline(root,p,now+500,{env:{TMUX_PANE:'%2'}});let t=now,calls=0;const out=await runNativeWorker(root,conv,{expectedIncidentId:incident,now:()=>t,sleep:async ms=>{t+=ms;},adapter:()=>{calls++;throw Error('multi CLI must never dispatch');}});
+ assert.equal(out.status,'MULTI_CLI');assert.equal(calls,0);assert.equal(out.retryIncident.status,'BLOCKED');
+});
