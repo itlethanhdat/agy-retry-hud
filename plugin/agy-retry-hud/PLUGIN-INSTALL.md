@@ -129,3 +129,27 @@ v0.4.5 installs both `Stop` and `PreInvocation` hooks. `Stop` arms/resolves retr
 `agy-retryctl` now prefers exact terminal binding (for example `TMUX_PANE`) before workspace-latest conversation inference. Use `--conversation <id>` for automation when exact identity is known.
 
 If AGY warns that a conversation is already open in another CLI instance, agy-retry-hud blocks automatic retry for that conversation (`retry:MULTI-CLI`) until the duplicate-session conflict is resolved. `agy-retryctl retry clear` clears a stale incident without turning retry off.
+
+
+## v0.4.8 quota retry diagnostics
+
+For individual quota errors such as `Individual quota reached ... Resets in 2h23m10s`, check:
+
+```bash
+agy-retryctl retry status --json
+```
+
+Expected after the final Stop hook:
+
+```json
+{
+  "nativeStatus": "WAIT_QUOTA",
+  "lastStop": {
+    "classification": "quota",
+    "classificationSource": "payload"
+  },
+  "nextRetryAt": 0
+}
+```
+
+If AGY omits the Stop error string but the 5h statusline bucket is exhausted, `classificationSource` may be `telemetry-5h`.

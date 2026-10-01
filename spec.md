@@ -1520,3 +1520,13 @@ Manual/new model invocation is authoritative over old automation state. `PreInvo
 Terminal binding may use stable inherited identifiers such as `TMUX_PANE`, `WT_SESSION`, `WEZTERM_PANE`, `KITTY_WINDOW_ID`, `TERM_SESSION_ID`, `GNOME_TERMINAL_SCREEN`, or `KONSOLE_DBUS_SESSION` when present. Missing identifiers fall back conservatively.
 
 If the same conversation is observed in more than one active terminal/CLI instance within the telemetry liveness window, automatic dispatch is prohibited. State is `MULTI_CLI`, HUD renders `retry:MULTI-CLI`, and workers send zero model messages. A worker must recheck this immediately before retry dispatch, not only when the original Stop was observed.
+
+
+# 43. Individual Quota Stop Hardening (v0.4.8)
+
+1. `Individual quota reached` with a trustworthy `Resets in ...` duration is an eligible individual/5h quota incident.
+2. `fullyIdle=false` does not suppress classification of an explicit retryable quota/transient Stop error; only non-error/non-retryable non-idle Stops are deferred.
+3. A worker armed while AGY still has background work must re-check native activity before sending and cancel/supersede if AGY is active at dispatch time.
+4. If `terminationReason=error` and the Stop `error` field is absent, structured statusline telemetry may classify the incident as 5h quota only when the 5h bucket is effectively exhausted and has a future reset.
+5. Arbitrary transcript/model/tool text is not scanned to create retry intent.
+6. Native state records sanitized `lastStop` diagnostics without persisting the full error text.

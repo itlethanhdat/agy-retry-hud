@@ -22,6 +22,29 @@ test('Stop hook schedules one conservative native worker and deduplicates repeat
  const second=scheduleFromStop(root,stop,{now:now+1000,spawnWorker:()=>spawned++});assert.equal(second.scheduled,false);assert.equal(spawned,1);
 });
 
+
+test('exact AGY individual quota message schedules retry at advertised reset even when Stop is not fully idle',()=>{
+ const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');mergeStatusline(root,payload({agent_state:'working'}),now);let spawned=0;
+ const error=`Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h23m10s.
+Error ID: 9fad01c9-ba6c-45c1-807f-2d38afbc53fb-749`;
+ const out=scheduleFromStop(root,{executionNum:7,terminationReason:'error',error,fullyIdle:false,conversationId:conv,workspacePaths:['/tmp/project']},{now,config:{resetMarginMs:90000,jitterMs:0},spawnWorker:()=>spawned++});
+ assert.equal(out.scheduled,true);assert.equal(spawned,1);const state=loadNative(root,conv);assert.equal(state.status,'WAIT_QUOTA');assert.equal(state.retryIncident.kind,'quota');assert.equal(state.nextRetryAt,now+(2*3600+23*60+10)*1000+90000);assert.equal(state.lastStop.classification,'quota');assert.equal(state.lastStop.classificationSource,'payload');
+});
+
+test('Stop error with missing error string can fall back to exhausted 5h telemetry',()=>{
+ const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');
+ const p=payload({quota:{'gemini-5h':{remaining_fraction:0,reset_in_seconds:8590},'gemini-weekly':{remaining_fraction:.8,reset_in_seconds:6*86400}}});mergeStatusline(root,p,now);let spawned=0;
+ const out=scheduleFromStop(root,{executionNum:8,terminationReason:'error',error:'',fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project']},{now,config:{resetMarginMs:90000,jitterMs:0},spawnWorker:()=>spawned++});
+ assert.equal(out.scheduled,true);assert.equal(spawned,1);const state=loadNative(root,conv);assert.equal(state.status,'WAIT_QUOTA');assert.equal(state.lastStop.classification,'quota');assert.equal(state.lastStop.classificationSource,'telemetry-5h');assert.equal(state.nextRetryAt,now+8590*1000+90000);
+});
+
+test('missing Stop error never becomes quota when the 5h bucket is still healthy',()=>{
+ const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');
+ const p=payload({quota:{'gemini-5h':{remaining_fraction:.25,reset_in_seconds:8590},'gemini-weekly':{remaining_fraction:.8,reset_in_seconds:6*86400}}});mergeStatusline(root,p,now);let spawned=0;
+ const out=scheduleFromStop(root,{executionNum:9,terminationReason:'error',error:'',fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project']},{now,spawnWorker:()=>spawned++});
+ assert.equal(out.scheduled,false);assert.equal(spawned,0);const state=loadNative(root,conv);assert.equal(state.status,'NEEDS_USER');assert.equal(state.lastStop.classification,'unknown');
+});
+
 test('normal native Stop cancels a pending retry to avoid duplicate dispatch after manual continuation',()=>{
  const root=temp(),now=1000000;mergeStatusline(root,payload({quota:{}}),now);let n=0;
  scheduleFromStop(root,{terminationReason:'error',error:'503 service unavailable',fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project']},{now,config:{transientBaseMs:1000,transientCapMs:1000,jitterMs:0},spawnWorker:()=>n++});
@@ -30,10 +53,12 @@ test('normal native Stop cancels a pending retry to avoid duplicate dispatch aft
  assert.equal(r.scheduled,false);const state=loadNative(root,conv);assert.equal(state.status,'IDLE');assert.equal(state.nextRetryAt,null);assert.equal(state.retryIncident.status,'RESOLVED');assert.equal(n,1);
 });
 
-test('Stop hook never schedules auth/unknown or non-idle background work',()=>{
+test('Stop hook never schedules auth, but confirmed retryable errors may arm while background work is still active',()=>{
  const root=temp(),now=1000000;mergeStatusline(root,payload({quota:{}}),now);
  let n=0;let r=scheduleFromStop(root,{terminationReason:'error',error:'401 unauthenticated',fullyIdle:true,conversationId:conv},{now,spawnWorker:()=>n++});assert.equal(r.scheduled,false);assert.equal(loadNative(root,conv).status,'NEEDS_USER');
- r=scheduleFromStop(root,{terminationReason:'error',error:'503 service unavailable',fullyIdle:false,conversationId:conv},{now,spawnWorker:()=>n++});assert.equal(r.scheduled,false);assert.equal(r.deferred,true);assert.equal(loadNative(root,conv).status,'NEEDS_USER');assert.equal(n,0);
+ // A retryable transient error remains eligible even when AGY reports fullyIdle=false.
+ // The detached worker will re-check native activity again before dispatch.
+ r=scheduleFromStop(root,{terminationReason:'error',error:'503 service unavailable',fullyIdle:false,conversationId:conv},{now:now+100,config:{transientBaseMs:1000,transientCapMs:1000,jitterMs:0},spawnWorker:()=>n++});assert.equal(r.scheduled,true);assert.equal(loadNative(root,conv).status,'WAIT_BACKOFF');assert.equal(n,1);
 });
 
 test('native worker waits then resumes exact conversation once and records success',async()=>{
@@ -133,10 +158,10 @@ test('mergeStatusline returns ephemeral null before AGY assigns a conversation i
 });
 
 
-test('non-idle Stop never creates PAUSED_UNCERTAIN when no retry incident exists',()=>{
+test('non-idle normal Stop is deferred without creating PAUSED_UNCERTAIN',()=>{
  const root=temp(),now=8_000_000;mergeStatusline(root,payload({quota:{},agent_state:'working'}),now);let n=0;
- const r=scheduleFromStop(root,{terminationReason:'error',error:'503 service unavailable',fullyIdle:false,conversationId:conv},{now,spawnWorker:()=>n++});
- assert.equal(r.scheduled,false);assert.equal(r.deferred,true);const state=loadNative(root,conv);assert.equal(state,null);assert.equal(n,0);
+ const r=scheduleFromStop(root,{terminationReason:'model_stop',error:'',fullyIdle:false,conversationId:conv},{now,spawnWorker:()=>n++});
+ assert.equal(r.scheduled,false);assert.equal(r.deferred,true);const state=loadNative(root,conv);assert.equal(state?.status,'IDLE');assert.equal(state?.retryIncident,null);assert.equal(n,0);
 });
 
 test('statusline resume self-heals the legacy v0.4.5 non-idle PAUSED_UNCERTAIN marker',()=>{

@@ -974,3 +974,15 @@ This plan is ready for execution.
 - [x] Block auto retry at Stop-time and again at worker dispatch-time for multi-CLI conflicts.
 - [x] Render `retry:MULTI-CLI`.
 - [x] Add focused regression tests and run full suite.
+
+
+## v0.4.8 hardening execution update
+
+- [x] Reproduce exact `Individual quota reached ... Resets in 2h23m10s` wording.
+- [x] Confirm policy parser extracts compact `h/m/s` reset duration.
+- [x] Permit confirmed retryable quota/transient incidents when Stop has `fullyIdle=false`.
+- [x] Keep non-idle normal Stop deferred.
+- [x] Add structured exhausted-5h fallback when Stop error text is omitted.
+- [x] Add sanitized `lastStop` diagnostics.
+- [x] Add negative control so healthy 5h telemetry cannot fabricate a quota incident.
+- [x] Run full regression: 108/108 PASS.

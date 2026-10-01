@@ -2,20 +2,15 @@ import test from 'node:test';import assert from 'node:assert/strict';import fs f
 import {installAndWire,resolveInstallSourceDir,setupDoctor,wireStatusLine} from '../src/setup.js';
 function temp(prefix='agy-setup-'){return fs.mkdtempSync(path.join(os.tmpdir(),prefix));}
 
-function decodeIfEncoded(cmd){
- const m=String(cmd||'').match(/(?:^|\s)-(?:EncodedCommand|enc)\s+([A-Za-z0-9+/=]+)/i);
- return m?Buffer.from(m[1],'base64').toString('utf16le'):String(cmd||'');
-}
-
 test('one-command setup installs plugin then wires statusLine while preserving unrelated settings',()=>{
  const home=temp(),source=path.resolve('plugin/agy-retry-hud'),settings=path.join(home,'.gemini','antigravity-cli','settings.json');fs.mkdirSync(path.dirname(settings),{recursive:true});fs.writeFileSync(settings,JSON.stringify({theme:'dark',permissions:{mode:'request-review'}}));
  const fake=path.join(temp(),'agy');fs.writeFileSync(fake,`#!/usr/bin/env node\nconst fs=require('fs'),path=require('path');const a=process.argv.slice(2);if(a[0]!=='plugin')process.exit(2);if(a[1]==='validate')process.exit(fs.existsSync(path.join(a[2],'plugin.json'))?0:2);if(a[1]==='install'){const dst=path.join(process.env.HOME,'.gemini','antigravity-cli','plugins','agy-retry-hud');fs.rmSync(dst,{recursive:true,force:true});fs.mkdirSync(path.dirname(dst),{recursive:true});fs.cpSync(a[2],dst,{recursive:true});process.exit(0)}process.exit(2);\n`);fs.chmodSync(fake,0o755);
- const out=installAndWire({sourceDir:source,home,agy:fake,env:{...process.env,HOME:home,USERPROFILE:home}});assert.ok(fs.existsSync(path.join(out.pluginDir,'plugin.json')));const s=JSON.parse(fs.readFileSync(settings));assert.equal(s.theme,'dark');assert.deepEqual(s.permissions,{mode:'request-review'});assert.equal(s.statusLine.enabled,true);assert.equal(s.statusLine.stack_with_default,false);assert.match(decodeIfEncoded(s.statusLine.command),/native-entry\.js.*statusline/);const doctor=setupDoctor({home,env:{...process.env,HOME:home,USERPROFILE:home}});assert.equal(doctor.statuslineWired,true);assert.equal(doctor.skillsReady,true);const hooks=JSON.parse(fs.readFileSync(path.join(out.pluginDir,'hooks.json')));assert.ok(hooks['agy-retry-auto-retry'].PreInvocation?.[0]?.command);assert.ok(hooks['agy-retry-auto-retry'].Stop?.[0]?.command);assert.equal(doctor.handoffSchema,true);assert.equal(doctor.launcherInstalled,true);assert.ok(fs.existsSync(doctor.launcher));
+ const out=installAndWire({sourceDir:source,home,agy:fake,env:{...process.env,HOME:home,USERPROFILE:home}});assert.ok(fs.existsSync(path.join(out.pluginDir,'plugin.json')));const s=JSON.parse(fs.readFileSync(settings));assert.equal(s.theme,'dark');assert.deepEqual(s.permissions,{mode:'request-review'});assert.equal(s.statusLine.enabled,true);assert.equal(s.statusLine.stack_with_default,false);assert.match(s.statusLine.command,/native-entry\.js.*statusline/);const doctor=setupDoctor({home,env:{...process.env,HOME:home,USERPROFILE:home}});assert.equal(doctor.statuslineWired,true);assert.equal(doctor.skillsReady,true);const hooks=JSON.parse(fs.readFileSync(path.join(out.pluginDir,'hooks.json')));assert.ok(hooks['agy-retry-auto-retry'].PreInvocation?.[0]?.command);assert.ok(hooks['agy-retry-auto-retry'].Stop?.[0]?.command);assert.equal(doctor.handoffSchema,true);assert.equal(doctor.launcherInstalled,true);assert.ok(fs.existsSync(doctor.launcher));
 });
 
 test('setup refuses to overwrite another HUD unless force is explicit',()=>{
  const home=temp(),pluginDir=path.join(home,'.gemini','antigravity-cli','plugins','agy-retry-hud'),settings=path.join(home,'.gemini','antigravity-cli','settings.json');fs.mkdirSync(path.dirname(pluginDir),{recursive:true});fs.cpSync(path.resolve('plugin/agy-retry-hud'),pluginDir,{recursive:true});fs.mkdirSync(path.dirname(settings),{recursive:true});fs.writeFileSync(settings,JSON.stringify({statusLine:{type:'command',command:'other-hud'}}));
- assert.throws(()=>wireStatusLine({home,env:{...process.env,HOME:home},pluginDir}),/another custom statusLine/);const out=wireStatusLine({home,env:{...process.env,HOME:home},pluginDir,force:true});assert.match(decodeIfEncoded(out.statusLine.command),/agy-retry-hud/);
+ assert.throws(()=>wireStatusLine({home,env:{...process.env,HOME:home},pluginDir}),/another custom statusLine/);const out=wireStatusLine({home,env:{...process.env,HOME:home},pluginDir,force:true});assert.match(out.statusLine.command,/agy-retry-hud/);
 });
 
 test('setup auto-detects nested plugin root when invoked from full project source',()=>{

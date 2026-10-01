@@ -283,6 +283,24 @@ function applyQuotaSnapshot(c,state,now){
  if(!['quota','long-quota'].includes(c.kind))return c;const blocked=(state?.snapshot?.quota||[]).filter(b=>b.remainingFraction===0&&b.resetAt>now);
  if(!blocked.length)return c;const latest=Math.max(...blocked.map(b=>b.resetAt));const long=blocked.some(b=>['weekly','daily'].includes(b.window));return {...c,kind:long?'long-quota':c.kind,resetAt:Math.max(c.resetAt||0,latest)};
 }
+function exhaustedFiveHourQuota(state,now){
+ const bucket=(state?.snapshot?.quota||[]).find(b=>b.window==='5h'&&Number.isFinite(b.remainingFraction)&&b.remainingFraction<=0.001&&Number.isFinite(b.resetAt)&&b.resetAt>now);
+ return bucket||null;
+}
+function quotaFallbackFromTelemetry(payload,state,c,now){
+ if(payload?.terminationReason!=='error')return {classification:c,source:'payload'};
+ if(['quota','long-quota','transient','permanent'].includes(c.kind))return {classification:c,source:'payload'};
+ const bucket=exhaustedFiveHourQuota(state,now);if(!bucket)return {classification:c,source:'payload'};
+ const text=typeof payload?.error==='string'?payload.error:'';
+ // If the Stop error itself is missing, AGY may still expose the exhausted 5h
+ // bucket through statusline telemetry. Only upgrade UNKNOWN/NONE to quota when
+ // that structured bucket is truly exhausted and has a future reset.
+ if(!text.trim()||c.kind==='none'||c.kind==='unknown')return {classification:{kind:'quota',resetAt:bucket.resetAt},source:'telemetry-5h'};
+ return {classification:c,source:'payload'};
+}
+function recordLastStop(state,payload,c,source,now){
+ state.lastStop={at:now,executionNum:Number.isInteger(payload?.executionNum)?payload.executionNum:null,terminationReason:typeof payload?.terminationReason==='string'?payload.terminationReason:'',fullyIdle:payload?.fullyIdle===true,hadError:typeof payload?.error==='string'?Boolean(payload.error.trim()):Boolean(payload?.error),classification:c?.kind||'unknown',classificationSource:source||'payload'};
+}
 export function weeklyGate(state,now=Date.now(),retryConfig=loadControlConfig().retry){
  if(retryConfig.stopWhenWeeklyExhausted===false)return {status:'disabled'};
  const observed=state?.snapshot?.observedAt,week=(state?.snapshot?.quota||[]).find(b=>b.window==='weekly');
@@ -296,7 +314,7 @@ function applyControlState(root,state,controlConfig){
  state.retryOverride=controls.retryOverride;state.handoffOverride=controls.handoffOverride;state.effectiveRetry=controls.retryEnabled;state.effectiveHandoff=controls.handoffEnabled;return controls;
 }
 function newNativeState(id,telemetry,payload,now){
- return {schemaVersion:1,conversationId:id,cwd:telemetry?.cwd||payload.workspacePaths?.[0]||'',model:telemetry?.model||payload.modelName||'',status:'IDLE',phase:'native',createdAt:now,startedAt:now,transientRetries:0,quotaRetries:0,nextRetryAt:null,retryKind:'',reason:'',message:DEFAULT_RESUME_MESSAGE,retryIncident:null,handoff:null,snapshot:telemetry?.snapshot||{observedAt:now,agentState:'unknown',contextPercent:null,quota:[],toolConfirmationPending:false,pendingInputCount:0,taskCount:0,artifactCount:0,terminalWidth:null}};
+ return {schemaVersion:1,conversationId:id,cwd:telemetry?.cwd||payload.workspacePaths?.[0]||'',model:telemetry?.model||payload.modelName||'',status:'IDLE',phase:'native',createdAt:now,startedAt:now,transientRetries:0,quotaRetries:0,nextRetryAt:null,retryKind:'',reason:'',message:DEFAULT_RESUME_MESSAGE,retryIncident:null,lastStop:null,handoff:null,snapshot:telemetry?.snapshot||{observedAt:now,agentState:'unknown',contextPercent:null,quota:[],toolConfirmationPending:false,pendingInputCount:0,taskCount:0,artifactCount:0,terminalWidth:null}};
 }
 export function scheduleFromStop(root,payload,{now=Date.now(),config={},controlConfig,spawnWorker}={}){
  const id=payload?.conversationId;if(!validConversation(id))return {decision:'stop',scheduled:false,reason:'missing conversation id'};
@@ -304,13 +322,17 @@ export function scheduleFromStop(root,payload,{now=Date.now(),config={},controlC
  const telemetry=loadTelemetry(root,id);let state=loadNative(root,id)||newNativeState(id,telemetry,payload,now);
  if(telemetry){state.snapshot=telemetry.snapshot;state.cwd=state.cwd||telemetry.cwd;state.model=state.model||telemetry.model;}
  const ctl=controlConfig||loadControlConfig(),controls=applyControlState(root,state,ctl);
- if(payload.fullyIdle===false){
-  // A non-idle Stop can occur while AGY still has background/subagent work. It
-  // is not a retry failure and must not poison the conversation with an
-  // uncertainty state. Defer retry classification until a fully-idle Stop.
-  return {decision:'stop',scheduled:false,deferred:true,reason:'native AGY still has background work; retry decision deferred'};
+ let c=classifyStop(payload,now);const fallback=quotaFallbackFromTelemetry(payload,state,c,now);c=fallback.classification;recordLastStop(state,payload,c,fallback.source,now);
+ if(payload.fullyIdle===false&&c.kind==='none'){
+  // A non-idle normal Stop can occur while AGY still has background/subagent
+  // work. It is not a retry failure and must not poison retry state.
+  saveNative(root,state);return {decision:'stop',scheduled:false,deferred:true,reason:'native AGY still has background work; normal Stop deferred'};
  }
- let c=classifyStop(payload,now);
+ if(payload.fullyIdle===false&&!['quota','long-quota','transient'].includes(c.kind)){
+  // Non-retryable/unknown errors are not background-retried while AGY is still
+  // active. Persist diagnostics, but wait for the final fully-idle Stop.
+  saveNative(root,state);return {decision:'stop',scheduled:false,deferred:true,reason:`native AGY still active; ${c.kind} retry decision deferred`};
+ }
  if(c.kind==='none'){
   if(ctl.retry.autoDisarmIncidentOnSuccess!==false&&activeIncident(state))setIncidentStatus(state,'RESOLVED',now,{resolvedAt:now,resolution:'normal_stop',resolvedExecutionNum:incidentSequence(payload)});
   if(WAITING.has(state.status)||state.status==='RUNNING'){state.status='IDLE';state.reason='native AGY completed normally; pending auto-retry resolved';state.nextRetryAt=null;state.errorFingerprint='';}

@@ -15,6 +15,12 @@ test('classifier separates quota from transient, permanent, unknown and tool pro
  assert.equal(classify({status:'WAITING'},now).kind,'needs_user');
  assert.equal(classify({status:'INTERRUPTED'},now).kind,'canceled');
 });
+
+test('exact AGY subscription quota wording with compact h/m/s reset is classified as individual quota',()=>{
+ const text=`Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h23m10s.
+Error ID: 9fad01c9-ba6c-45c1-807f-2d38afbc53fb-749`;
+ const c=classify(error(text),now);assert.equal(c.kind,'quota');assert.equal(c.resetAt,now+(2*3600+23*60+10)*1000);assert.equal(c.retryAfterMs,(2*3600+23*60+10)*1000);
+});
 test('reset deadline, fallback, margin, jitter and budget are deterministic',()=>{
  const b={startedAt:now,transientRetries:0,quotaRetries:0};
  let d=decide(classify(error('Individual quota reached. Resets in 2h'),now),b,now,0);

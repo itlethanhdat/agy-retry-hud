@@ -55,16 +55,7 @@ export function wireStatusLine({home=os.homedir(),env=process.env,pluginDir,forc
  const receipt=readJSON(p.receipt,null);if(!receipt)writeJSON(p.receipt,{schemaVersion:2,installedAt:new Date().toISOString(),previousStatusLine:previous,pluginDir:dir,settings:p.settings,launcher:p.launcher});
  return {pluginDir:dir,settings:p.settings,statusLine:settings.statusLine};
 }
-function runAgy(args,{agy=process.env.AGY_BIN||'agy',cwd,env=process.env}={}){
- let cmd=agy,callArgs=args;
- if(process.platform==='win32'&&fs.existsSync(agy)&&!agy.toLowerCase().endsWith('.exe')){
-  cmd=process.execPath;callArgs=[agy,...args];
- }
- const r=spawnSync(cmd,callArgs,{cwd,env,encoding:'utf8',shell:false});
- if(r.error)throw r.error;
- if(r.status!==0)throw Error(`agy ${args.join(' ')} failed (${r.status}): ${(r.stderr||r.stdout||'').trim()}`);
- return r;
-}
+function runAgy(args,{agy='agy',cwd,env=process.env}={}){const r=spawnSync(agy,args,{cwd,env,encoding:'utf8',shell:false});if(r.error)throw r.error;if(r.status!==0)throw Error(`agy ${args.join(' ')} failed (${r.status}): ${(r.stderr||r.stdout||'').trim()}`);return r;}
 export function resolveInstallSourceDir({sourceDir,scriptFile=fileURLToPath(import.meta.url),cwd=process.cwd()}={}){
  const scriptDir=path.dirname(scriptFile),projectRoot=path.resolve(scriptDir,'..');
  const candidates=[sourceDir&&path.resolve(sourceDir),scriptDir,projectRoot,path.join(projectRoot,'plugin','agy-retry-hud'),path.resolve(cwd,'agy-retry-hud'),path.resolve(cwd,'plugin','agy-retry-hud')].filter(Boolean);
@@ -76,7 +67,7 @@ export function createCtlLauncher({home=os.homedir(),env=process.env,platform=pr
  let existing='';try{existing=fs.readFileSync(target,'utf8');}catch(e){if(e.code!=='ENOENT')throw e;}if(existing&&!existing.includes('agy-retry-hud')&&!existing.includes('retryctl.js'))return {launcher:target,created:false,reason:'existing unrelated launcher preserved'};
  fs.mkdirSync(path.dirname(target),{recursive:true});if(platform==='win32')fs.writeFileSync(target,`@echo off\r\nnode "${entry}" %*\r\n`,'utf8');else{fs.writeFileSync(target,`#!/bin/sh\n# agy-retry-hud launcher\nexec node ${q(entry)} "$@"\n`,'utf8');fs.chmodSync(target,0o755);}return {launcher:target,created:true};
 }
-export function installAndWire({sourceDir,home=os.homedir(),env=process.env,agy=process.env.AGY_BIN||env?.AGY_BIN||'agy',force=false,validate=true,platform=process.platform}={}){
+export function installAndWire({sourceDir,home=os.homedir(),env=process.env,agy='agy',force=false,validate=true,platform=process.platform}={}){
  sourceDir=resolveInstallSourceDir({sourceDir});const childEnv={...env,HOME:home,USERPROFILE:home};if(validate)runAgy(['plugin','validate',sourceDir],{agy,cwd:sourceDir,env:childEnv});runAgy(['plugin','install',sourceDir],{agy,cwd:sourceDir,env:childEnv});
  const paths=setupPaths({home,env:childEnv,platform}),pluginDir=locateInstalledPlugin({home,env:childEnv,platform});
  if(!pluginDir)throw Error(`agy plugin install completed but no valid agy-retry-hud installation was found. Checked shared config: ${paths.sharedPlugin} and CLI-private path: ${paths.cliPlugin}.`);

@@ -1,8 +1,6 @@
 node_modules/
 .superpowers/
-/dist/
-!plugin/agy-retry-hud/dist/
+dist/
 *.log
-*.zip
 .env
 .DS_Store

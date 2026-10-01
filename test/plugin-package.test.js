@@ -3,9 +3,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
-const root = fileURLToPath(new URL('..', import.meta.url));
+const root = path.resolve(new URL('..', import.meta.url).pathname);
 const verifier = path.join(root, 'scripts', 'verify-plugin-package.js');
 
 test('staged plugin has plugin.json at the root and validates structurally', () => {

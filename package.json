@@ -1,6 +1,6 @@
 {
   "name": "agy-retry-hud",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "private": true,
   "type": "module",
   "engines": {
@@ -21,7 +21,6 @@
     "verify:live:strict": "node scripts/live-verify.js --json --strict",
     "verify:plugin-package": "node scripts/verify-plugin-package.js plugin/agy-retry-hud",
     "setup:plugin": "node plugin/agy-retry-hud/setup.js install",
-    "build": "node scripts/build-plugin.js",
     "build:plugin": "node scripts/build-plugin.js",
     "pretest": "node scripts/build-plugin.js"
   },

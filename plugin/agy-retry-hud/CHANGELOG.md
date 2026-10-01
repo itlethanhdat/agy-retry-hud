@@ -1,3 +1,12 @@
+# v0.4.8
+
+- Fixed missed auto-retry for real AGY `Individual quota reached ... Resets in ...` errors when the Stop hook arrives with `fullyIdle=false`.
+- Non-idle **normal** Stops are still deferred, but confirmed retryable quota/transient errors may now arm an incident immediately; the worker re-checks native activity before dispatch.
+- Added a structured 5h-quota fallback for `terminationReason=error` when AGY omits `payload.error` but statusline telemetry shows the active 5h bucket exhausted with a future reset.
+- Added `lastStop` diagnostics (`terminationReason`, `fullyIdle`, classification, classification source) to native state and `agy-retryctl retry status --json`.
+- Added regression coverage for the exact production wording `Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h23m10s.` including Error ID, non-idle Stop, missing Stop error, and healthy-quota negative control.
+- Full offline suite: 108 tests.
+
 # v0.4.7
 
 - Manual/new AGY `PreInvocation` now supersedes stale `NEEDS_USER`, `PAUSED_UNCERTAIN`, waiting, or dispatching retry state for the same conversation and clears `nextRetryAt` without disabling retry.

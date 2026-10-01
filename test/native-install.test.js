@@ -2,23 +2,18 @@ import test from 'node:test';import assert from 'node:assert/strict';import fs f
 import {install,uninstall,doctor} from '../scripts/install-native.js';
 function temp(){return fs.mkdtempSync(path.join(os.tmpdir(),'agy-install-'));}
 
-function decodeIfEncoded(cmd){
- const m=String(cmd||'').match(/(?:^|\s)-(?:EncodedCommand|enc)\s+([A-Za-z0-9+/=]+)/i);
- return m?Buffer.from(m[1],'base64').toString('utf16le'):String(cmd||'');
-}
-
 test('native installer stages plugin, wires statusline and restores prior setting on uninstall',()=>{
  const home=temp(),settings=path.join(home,'.gemini','antigravity-cli','settings.json');fs.mkdirSync(path.dirname(settings),{recursive:true});
  fs.writeFileSync(settings,JSON.stringify({theme:'dark',statusLine:{type:'command',command:'old-hud',enabled:true}}));
  assert.throws(()=>install({home}),/custom statusLine/);
  const r=install({home,forceStatusline:true});assert.ok(fs.existsSync(path.join(r.pluginDir,'plugin.json')));assert.ok(fs.existsSync(path.join(r.pluginDir,'dist','native-entry.js')));
- const after=JSON.parse(fs.readFileSync(settings));assert.equal(after.theme,'dark');assert.match(decodeIfEncoded(after.statusLine.command),/agy-retry-hud/);const hooks=JSON.parse(fs.readFileSync(path.join(r.pluginDir,'hooks.json')));const hookCommand=decodeIfEncoded(hooks['agy-retry-auto-retry'].Stop[0].command);assert.ok(hookCommand.includes('native-entry.js')&&hookCommand.includes('stop-hook'));assert.ok(hookCommand.includes(r.pluginDir));assert.doesNotMatch(hookCommand,/__AGY_RETRY_PLUGIN_DIR__/);const d=doctor({home});assert.equal(d.plugin,true);assert.equal(d.entry,true);assert.equal(d.hooks,true);assert.equal(d.statuslineWired,true);assert.equal(d.ok,d.nodeOk);
+ const after=JSON.parse(fs.readFileSync(settings));assert.equal(after.theme,'dark');assert.match(after.statusLine.command,/agy-retry-hud/);const hooks=JSON.parse(fs.readFileSync(path.join(r.pluginDir,'hooks.json')));const hookCommand=hooks['agy-retry-auto-retry'].Stop[0].command;assert.ok(hookCommand.includes('native-entry.js\" stop-hook')||hookCommand.includes('native-entry.js stop-hook'));assert.ok(hookCommand.includes(r.pluginDir));assert.doesNotMatch(hookCommand,/__AGY_RETRY_PLUGIN_DIR__/);const d=doctor({home});assert.equal(d.plugin,true);assert.equal(d.entry,true);assert.equal(d.hooks,true);assert.equal(d.statuslineWired,true);assert.equal(d.ok,d.nodeOk);
  const u=uninstall({home});assert.equal(u.removed,true);const restored=JSON.parse(fs.readFileSync(settings));assert.equal(restored.statusLine.command,'old-hud');assert.equal(restored.theme,'dark');assert.equal(fs.existsSync(r.pluginDir),false);
 });
 
 test('installer can wire a fresh profile without deleting unrelated settings',()=>{
  const home=temp(),settings=path.join(home,'.gemini','antigravity-cli','settings.json');fs.mkdirSync(path.dirname(settings),{recursive:true});fs.writeFileSync(settings,JSON.stringify({permissions:{mode:'request-review'}}));
- install({home});const s=JSON.parse(fs.readFileSync(settings));assert.deepEqual(s.permissions,{mode:'request-review'});assert.match(decodeIfEncoded(s.statusLine.command),/native-entry\.js.*statusline/);
+ install({home});const s=JSON.parse(fs.readFileSync(settings));assert.deepEqual(s.permissions,{mode:'request-review'});assert.match(s.statusLine.command,/native-entry\.js.*statusline/);
  uninstall({home});const s2=JSON.parse(fs.readFileSync(settings));assert.deepEqual(s2.permissions,{mode:'request-review'});assert.equal('statusLine' in s2,false);
 });
 

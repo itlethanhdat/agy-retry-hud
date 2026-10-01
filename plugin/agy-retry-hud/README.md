@@ -1,10 +1,10 @@
-# AGY Retry HUD v0.4.7
+# AGY Retry HUD v0.4.8
 
 Native HUD + policy-controlled Auto Retry + Portable Handoff cho **Antigravity CLI (`agy`)**.
 
 `agy-retry-hud` giữ nguyên TUI gốc của AGY. Plugin dùng native status line để hiển thị context/quota/trạng thái, Stop hook để phát hiện lỗi, worker nền để retry có kiểm soát, và `agy-retryctl` + plugin skills để quản lý retry/handoff.
 
-> **Release status:** v0.4.7 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
+> **Release status:** v0.4.8 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
 
 ## Tính năng chính
 
@@ -165,6 +165,31 @@ retry:WEEKLY BLOCK
 
 và worker **không gửi model turn**. Nếu weekly telemetry stale/unknown trước quota retry, worker chỉ cho phép read-only refresh; vẫn unknown thì `NEEDS_USER`.
 
+
+
+
+## v0.4.8 Individual quota retry hardening
+
+AGY can report an exhausted individual quota as:
+
+```text
+Individual quota reached. Please upgrade your subscription to increase your limits.
+Resets in 2h23m10s.
+```
+
+v0.4.8 treats this as an eligible individual/5h quota incident and schedules the retry at the advertised reset plus the configured safety margin.
+
+A retryable quota/API error can be armed even when the Stop hook reports `fullyIdle=false`; this matters when AGY still has background/subagent activity. The worker does **not** blindly send later: it re-validates terminal activity, incident identity, weekly quota, policy state, and multi-CLI safety immediately before dispatch.
+
+If AGY emits `terminationReason=error` but omits the Stop `error` string, the plugin may use structured statusline telemetry as a conservative fallback only when the active 5h bucket is actually exhausted and has a future reset.
+
+Debug with:
+
+```bash
+agy-retryctl retry status --json
+```
+
+The output now includes `lastStop.classification` and `lastStop.classificationSource` (`payload` or `telemetry-5h`).
 
 
 ## v0.4.7 exact-conversation and multi-CLI retry safety
