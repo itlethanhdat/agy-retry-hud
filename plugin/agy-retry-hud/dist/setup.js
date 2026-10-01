@@ -81,17 +81,29 @@ function configHealth({home=os.homedir(),env=process.env,platform=process.platfo
  const file=controlConfigPath({home,env,platform});if(!fs.existsSync(file))return {file,exists:false,valid:true,usingDefaults:true};
  try{loadControlConfig({file,env});return {file,exists:true,valid:true,usingDefaults:false};}catch(e){return {file,exists:true,valid:false,usingDefaults:false,error:e?.message||String(e)};}
 }
+export function validateSkillFrontmatter(file){
+ if(!fs.existsSync(file))return {exists:false,valid:false,error:'missing skill file'};
+ const text=fs.readFileSync(file,'utf8').replace(/\r\n/g,'\n'),lines=text.split('\n');if(lines[0]!=='---')return {exists:true,valid:false,error:'missing opening frontmatter delimiter'};
+ const end=lines.indexOf('---',1);if(end<0)return {exists:true,valid:false,error:'missing closing frontmatter delimiter'};
+ const front=lines.slice(1,end),nameLine=front.find(x=>/^name:\s*/.test(x)),descriptionLine=front.find(x=>/^description:\s*/.test(x));
+ if(!nameLine||!descriptionLine)return {exists:true,valid:false,error:'frontmatter requires name and description'};
+ const value=descriptionLine.replace(/^description:\s*/,''),quoted=/^(?:".*"|'.*'|[>|])$/.test(value.trim());
+ if(value.includes(': ')&&!quoted)return {exists:true,valid:false,error:'description contains an unquoted colon'};
+ return {exists:true,valid:true};
+}
 export function setupDoctor({home=os.homedir(),env=process.env,platform=process.platform}={}){
  const p=setupPaths({home,env,platform}),pluginDir=locateInstalledPlugin({home,env,platform}),settings=readJSON(p.settings,{}),command=String(settings.statusLine?.command||''),skills=['retry','handoff','continue-handoff','handoff-status','retry-status','setup'];
- const skillStatus=Object.fromEntries(skills.map(x=>[x,!!pluginDir&&fs.existsSync(path.join(pluginDir,'skills',x,'SKILL.md'))]));
+ const skillHealth=Object.fromEntries(skills.map(x=>[x,pluginDir?validateSkillFrontmatter(path.join(pluginDir,'skills',x,'SKILL.md')):{exists:false,valid:false,error:'plugin missing'}]));
+ const skillStatus=Object.fromEntries(skills.map(x=>[x,skillHealth[x].exists]));
+ const skillFrontmatter=Object.fromEntries(skills.map(x=>[x,skillHealth[x].valid]));
  const schema=!!pluginDir&&fs.existsSync(path.join(pluginDir,'shared','handoff-schema-v1.json')),launcher=fs.existsSync(p.launcher),hooks=hookReady(pluginDir),config=configHealth({home,env,platform});
- const statuslineWired=!!pluginDir&&commandReferencesPlugin(command),nodeSupported=Number(process.versions.node.split('.')[0])===24,skillsReady=Object.values(skillStatus).every(Boolean);
+ const statuslineWired=!!pluginDir&&commandReferencesPlugin(command),nodeSupported=Number(process.versions.node.split('.')[0])===24,skillsReady=Object.values(skillStatus).every(Boolean)&&Object.values(skillFrontmatter).every(Boolean);
  const cliStaged=!!pluginDir&&path.resolve(pluginDir)===path.resolve(p.cliPlugin),sharedConfigStaged=!!pluginDir&&path.resolve(pluginDir)===path.resolve(p.sharedPlugin);
  const globallyDiscoverable=cliStaged||sharedConfigStaged,skillsDiscoverable=skillsReady&&globallyDiscoverable;
  const installLocation=sharedConfigStaged?'shared-config':cliStaged?'cli-private':pluginDir?'custom':'missing';
  const reinstallRequired=!!pluginDir&&(!skillsReady||!schema||!fs.existsSync(path.join(pluginDir,'dist','native-entry.js'))||!fs.existsSync(path.join(pluginDir,'dist','retryctl.js')));
  const ok=!!pluginDir&&statuslineWired&&hooks&&skillsDiscoverable&&schema&&launcher&&config.valid&&nodeSupported&&!reinstallRequired;
- return {ok,pluginDir,settings:p.settings,installed:!!pluginDir,cliPluginDir:p.cliPlugin,sharedPluginDir:p.sharedPlugin,legacyPluginDir:p.legacyPlugin,installLocation,cliStaged,sharedConfigStaged,skillsDiscoverable,statuslineWired,statusLine:settings.statusLine||null,hooksReady:hooks,node:process.version,nodeSupported,skills:skillStatus,skillsReady,handoffSchema:schema,launcher:p.launcher,launcherInstalled:launcher,config,reinstallRequired};
+ return {ok,pluginDir,settings:p.settings,installed:!!pluginDir,cliPluginDir:p.cliPlugin,sharedPluginDir:p.sharedPlugin,legacyPluginDir:p.legacyPlugin,installLocation,cliStaged,sharedConfigStaged,skillsDiscoverable,statuslineWired,statusLine:settings.statusLine||null,hooksReady:hooks,node:process.version,nodeSupported,skills:skillStatus,skillFrontmatter,skillsReady,handoffSchema:schema,launcher:p.launcher,launcherInstalled:launcher,config,reinstallRequired};
 }
 export function repairSetup({home=os.homedir(),env=process.env,platform=process.platform,force=false,agy='agy'}={}){
  let pluginDir=locateInstalledPlugin({home,env,platform});if(!pluginDir)throw Error('agy-retry-hud is not installed; run setup.js install from the extracted plugin package first');

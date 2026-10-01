@@ -1,3 +1,13 @@
+# v0.4.10
+
+- Fixed `skills/setup/SKILL.md` YAML frontmatter so AGY can discover the setup skill. The colon-containing description is now quoted.
+- Fixed the `PreInvocation` hook response schema: it now returns only `{"injectSteps":[]}`. `terminationBehavior` is valid for `PostInvocation`, not `PreInvocation`, on AGY 1.2.14.
+- Hardened statusline stdin handling: native-entry now parses and detaches as soon as a complete JSON payload arrives instead of waiting for EOF, with a bounded statusline stdin timeout fallback. This reduces the chance of AGY killing a hung statusline subprocess.
+- Setup doctor now validates packaged skill frontmatter, and `reinstallRequired` becomes true when a skill file exists but its frontmatter is invalid.
+- Plugin package verification now rejects malformed frontmatter with unsafe unquoted `: ` scalars.
+- Added regression tests for AGY-compatible PreInvocation output, non-EOF statusline input, malformed skill frontmatter, and direct-install hook behavior.
+- Full offline suite: 117 tests.
+
 # v0.4.9
 
 - Rebuilt retry HUD around explicit scheduler observability: `retry:WAIT <countdown> · <reason> · <attempt/max> · sched:<health>`.

@@ -1,10 +1,10 @@
-# AGY Retry HUD v0.4.9
+# AGY Retry HUD v0.4.10
 
 Native HUD + policy-controlled Auto Retry + Portable Handoff cho **Antigravity CLI (`agy`)**.
 
 `agy-retry-hud` giữ nguyên TUI gốc của AGY. Plugin dùng native status line để hiển thị context/quota/trạng thái, Stop hook để phát hiện lỗi, worker nền để retry có kiểm soát, và `agy-retryctl` + plugin skills để quản lý retry/handoff.
 
-> **Release status:** v0.4.9 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
+> **Release status:** v0.4.10 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
 
 ## Tính năng chính
 
@@ -168,6 +168,33 @@ và worker **không gửi model turn**. Nếu weekly telemetry stale/unknown tr�
 
 
 
+
+
+## v0.4.10 AGY 1.2.14 compatibility fixes
+
+This release fixes two runtime errors observed in live AGY 1.2.14 logs:
+
+- `skills/setup/SKILL.md` could fail YAML parsing because its description contained an unquoted colon.
+- The PreInvocation hook incorrectly returned `terminationBehavior`, a field AGY accepts for PostInvocation but not PreInvocation.
+
+PreInvocation now emits exactly:
+
+```json
+{
+  "injectSteps": []
+}
+```
+
+The statusline stdin reader also stops waiting as soon as a complete JSON object is available. This avoids depending on stdin EOF and adds a bounded fallback for runner stalls.
+
+After upgrading, run:
+
+```bash
+node ~/.gemini/config/plugins/agy-retry-hud/setup.js repair
+node ~/.gemini/config/plugins/agy-retry-hud/setup.js doctor
+```
+
+`doctor` now reports invalid skill frontmatter through `skillFrontmatter` and `skillsReady=false`.
 
 ## v0.4.9 Retry countdown + scheduler health
 

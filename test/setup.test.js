@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
-import {installAndWire,resolveInstallSourceDir,setupDoctor,wireStatusLine} from '../src/setup.js';
+import {installAndWire,resolveInstallSourceDir,setupDoctor,validateSkillFrontmatter,wireStatusLine} from '../src/setup.js';
 function temp(prefix='agy-setup-'){return fs.mkdtempSync(path.join(os.tmpdir(),prefix));}
 
 test('one-command setup installs plugin then wires statusLine while preserving unrelated settings',()=>{
@@ -76,4 +76,10 @@ test('one-command setup accepts AGY 1.2.x shared config plugin install path',()=
  const doctor=setupDoctor({home,env:{...process.env,HOME:home,USERPROFILE:home}});
  assert.equal(doctor.sharedConfigStaged,true);assert.equal(doctor.installLocation,'shared-config');assert.equal(doctor.skillsDiscoverable,true);assert.equal(doctor.skills.setup,true);assert.equal(doctor.statuslineWired,true);
  assert.equal(JSON.parse(fs.readFileSync(settings)).statusLine.enabled,true);
+});
+
+
+test('setup doctor rejects malformed skill frontmatter even when SKILL.md exists',()=>{
+ const home=temp(),pluginDir=path.join(home,'.gemini','config','plugins','agy-retry-hud'),env={...process.env,HOME:home,USERPROFILE:home,XDG_CONFIG_HOME:path.join(home,'.config')};fs.mkdirSync(path.dirname(pluginDir),{recursive:true});fs.cpSync(path.resolve('plugin/agy-retry-hud'),pluginDir,{recursive:true});
+ const setupSkill=path.join(pluginDir,'skills','setup','SKILL.md');fs.writeFileSync(setupSkill,'---\nname: setup\ndescription: broken: yaml scalar\n---\n');const health=validateSkillFrontmatter(setupSkill);assert.equal(health.exists,true);assert.equal(health.valid,false);const doctor=setupDoctor({home,env,platform:'linux'});assert.equal(doctor.skills.setup,true);assert.equal(doctor.skillFrontmatter.setup,false);assert.equal(doctor.skillsReady,false);assert.equal(doctor.reinstallRequired,true);
 });

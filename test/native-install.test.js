@@ -28,5 +28,5 @@ test('release plugin hooks.json is directly installable without placeholder rewr
  const r=spawnSync(command,{shell:true,input:JSON.stringify(payload),encoding:'utf8',env:{...process.env,HOME:home,USERPROFILE:home,AGY_RETRY_STATE_DIR:state}});
  assert.equal(r.status,0,r.stderr);
  assert.deepEqual(JSON.parse(r.stdout),{decision:'stop'});
- const p=spawnSync(preCommand,{shell:true,input:JSON.stringify({conversationId:payload.conversationId,invocationNum:2,workspacePaths:[home],modelName:'gemini-test'}),encoding:'utf8',env:{...process.env,HOME:home,USERPROFILE:home,AGY_RETRY_STATE_DIR:state}});assert.equal(p.status,0,p.stderr);assert.deepEqual(JSON.parse(p.stdout),{injectSteps:[],terminationBehavior:''});
+ const p=spawnSync(preCommand,{shell:true,input:JSON.stringify({conversationId:payload.conversationId,invocationNum:2,workspacePaths:[home],modelName:'gemini-test'}),encoding:'utf8',env:{...process.env,HOME:home,USERPROFILE:home,AGY_RETRY_STATE_DIR:state}});assert.equal(p.status,0,p.stderr);assert.deepEqual(JSON.parse(p.stdout),{injectSteps:[]});
 });

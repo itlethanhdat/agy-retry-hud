@@ -7,7 +7,7 @@ import {loadControlConfig,saveControlConfig,controlConfigPath,setConversationOve
 import {createHandoff,finalizeSemanticHandoff,listHandoffs,loadHandoff,exportHandoff,importHandoff,inspectPortable,validateWorkspace,handoffSummary,markConsumed} from './handoff.js';
 import {setupDoctor,repairSetup} from './setup.js';
 
-const HELP=`agy-retryctl v0.4.9
+const HELP=`agy-retryctl v0.4.10
   agy-retryctl setup status
   agy-retryctl setup repair [--force-statusline]
   agy-retryctl retry on|off|status

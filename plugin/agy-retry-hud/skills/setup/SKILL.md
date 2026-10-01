@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Checks and repairs the agy-retry-hud installation: statusline, hooks, skills, config, launcher, handoff schema, and Node runtime compatibility. Use when the HUD is missing, partially configured, or after upgrading the plugin.
+description: "Checks and repairs the agy-retry-hud installation: statusline, hooks, skills, config, launcher, handoff schema, and Node runtime compatibility. Use when the HUD is missing, partially configured, or after upgrading the plugin."
 metadata:
   icon: "🛠️"
 ---
