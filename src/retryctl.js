@@ -2,15 +2,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {parseArgs} from 'node:util';
-import {nativeRoot,loadNative,loadTelemetry,terminalInstanceBinding,activeTerminalInstances,clearRetryState} from './native.js';
+import {nativeRoot,loadNative,loadTelemetry,terminalInstanceBinding,activeTerminalInstances,clearRetryState,retrySchedulerDiagnostics} from './native.js';
 import {loadControlConfig,saveControlConfig,controlConfigPath,setConversationOverride,getConversationOverride,effectiveControls,updateGlobal} from './control.js';
 import {createHandoff,finalizeSemanticHandoff,listHandoffs,loadHandoff,exportHandoff,importHandoff,inspectPortable,validateWorkspace,handoffSummary,markConsumed} from './handoff.js';
 import {setupDoctor,repairSetup} from './setup.js';
 
-const HELP=`agy-retryctl v0.4.8
+const HELP=`agy-retryctl v0.4.9
   agy-retryctl setup status
   agy-retryctl setup repair [--force-statusline]
   agy-retryctl retry on|off|status
+  agy-retryctl retry scheduler [--conversation ID] [--json]
   agy-retryctl retry clear [--conversation ID]
   agy-retryctl retry session on|off|inherit [--conversation ID]
   agy-retryctl handoff on|off|status
@@ -47,7 +48,8 @@ async function main(argv=process.argv.slice(2)){
  }
  if(group==='retry'){
   if(action==='on'||action==='off'){const c=updateGlobal('retry',asBool(action),{file:cfgFile});output({retry:c.retry.enabled},v.json);return 0;}
-  if(action==='status'){let info=null;try{info=resolveConversationInfo(root,{conversation:v.conversation,cwd});}catch{}const id=info?.conversationId,config=loadControlConfig({file:cfgFile}),data=id?effectiveControls(root,id,{config}):{config,retryOverride:'inherit',retryEnabled:config.retry.enabled},native=id?loadNative(root,id):null,incident=native?.retryIncident||null;output({conversationId:id||null,conversationResolution:info?.resolution||null,multiCli:Boolean(info?.multiCli),activeTerminalInstances:info?.activeTerminalInstances||0,global:config.retry.enabled,override:data.retryOverride,effective:data.retryEnabled,weeklyThreshold:config.retry.weeklyRemainingThreshold,incident:incident?{id:incident.id,status:incident.status,kind:incident.kind||null,createdAt:incident.createdAt||null,updatedAt:incident.updatedAt||null}:null,lastStop:native?.lastStop||null,nativeStatus:native?.status||null,reason:native?.reason||null,nextRetryAt:native?.nextRetryAt||null},v.json);return 0;}
+  if(action==='status'){let info=null;try{info=resolveConversationInfo(root,{conversation:v.conversation,cwd});}catch{}const id=info?.conversationId,config=loadControlConfig({file:cfgFile}),data=id?effectiveControls(root,id,{config}):{config,retryOverride:'inherit',retryEnabled:config.retry.enabled},native=id?loadNative(root,id):null,incident=native?.retryIncident||null,scheduler=native?retrySchedulerDiagnostics(native):null;output({conversationId:id||null,conversationResolution:info?.resolution||null,multiCli:Boolean(info?.multiCli),activeTerminalInstances:info?.activeTerminalInstances||0,global:config.retry.enabled,override:data.retryOverride,effective:data.retryEnabled,weeklyThreshold:config.retry.weeklyRemainingThreshold,incident:incident?{id:incident.id,status:incident.status,kind:incident.kind||null,createdAt:incident.createdAt||null,updatedAt:incident.updatedAt||null}:null,lastStop:native?.lastStop||null,nativeStatus:native?.status||null,reason:native?.reason||null,nextRetryAt:native?.nextRetryAt||null,scheduler},v.json);return 0;}
+  if(action==='scheduler'){const info=resolveConversationInfo(root,{conversation:v.conversation,cwd}),native=loadNative(root,info.conversationId),d=native?retrySchedulerDiagnostics(native):null;if(v.json){output({conversationId:info.conversationId,conversationResolution:info.resolution,nativeStatus:native?.status||null,reason:native?.reason||null,scheduler:d},true);return d&&['LOST','STALE'].includes(d.status)?4:0;}const lines=[`Conversation : ${info.conversationId}`,`State        : ${native?.status||'MISSING'}`,`Scheduler    : ${d?.status||'IDLE'}`,`Retry in     : ${d?.retryIn||'-'}`,`Retry at     : ${d?.retryAt||'-'}`,`Reason       : ${d?.retryLabel||'-'}`,`Attempt      : ${d?.attempt||0}/${d?.maxAttempts||0}`,`Source       : ${d?.deadlineSource||'-'}`,`Worker       : ${d?.workerAlive?'alive':d?.workerPid?'not alive':'none'}${d?.workerPid?` (pid ${d.workerPid})`:''}`];output(lines.join('\n'),false);return d&&['LOST','STALE'].includes(d.status)?4:0;}
   if(action==='clear'){const info=resolveConversationInfo(root,{conversation:v.conversation,cwd}),out=clearRetryState(root,info.conversationId,{reason:'manual_clear'});output({...out,conversationResolution:info.resolution,multiCli:info.multiCli},v.json);return 0;}
   if(action==='session'){if(!['on','off','inherit'].includes(arg1))err('usage: retry session on|off|inherit');const id=resolveConversation(root,{conversation:v.conversation,cwd});setConversationOverride(root,'retry',id,arg1);const config=loadControlConfig({file:cfgFile}),data=effectiveControls(root,id,{config});output({conversationId:id,override:arg1,effective:data.retryEnabled},v.json);return 0;}
   err('unknown retry command');

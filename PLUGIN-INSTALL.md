@@ -153,3 +153,14 @@ Expected after the final Stop hook:
 ```
 
 If AGY omits the Stop error string but the 5h statusline bucket is exhausted, `classificationSource` may be `telemetry-5h`.
+
+
+## v0.4.9 scheduler diagnostics
+
+Sau khi gặp quota/API transient error, kiểm tra worker/timer mà không gửi model turn:
+
+```bash
+agy-retryctl retry scheduler --json
+```
+
+Nếu HUD hiển thị `sched:LOST` hoặc `sched:STALE`, countdown vẫn có thể còn trong persistent state nhưng worker không còn được coi là healthy. Dùng output này để phân biệt timer thật với state cũ.

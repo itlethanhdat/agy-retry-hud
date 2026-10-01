@@ -1530,3 +1530,14 @@ If the same conversation is observed in more than one active terminal/CLI instan
 4. If `terminationReason=error` and the Stop `error` field is absent, structured statusline telemetry may classify the incident as 5h quota only when the 5h bucket is effectively exhausted and has a future reset.
 5. Arbitrary transcript/model/tool text is not scanned to create retry intent.
 6. Native state records sanitized `lastStop` diagnostics without persisting the full error text.
+
+
+# 44. Retry Countdown & Scheduler Observability (v0.4.9)
+
+Waiting retry UI must expose: retry countdown, sanitized reason label, current attempt/max attempts, and scheduler health. Countdown is derived locally from persistent `nextRetryAt`; status-line rendering must not trigger model calls or periodic quota refreshes.
+
+Scheduler state persists the exact incident id, worker PID, worker start, heartbeat, next retry deadline, deadline source, reason label and attempt budget. A waiting scheduler is `OK` only when its worker process is alive and heartbeat is fresh. A dead worker is `LOST`; a live worker with stale heartbeat is `STALE`. Worker transitions through `CHECKING`, `DISPATCHING`, and `RUNNING` around the final safety gates and model dispatch.
+
+Supported deadline source labels: `server`, `telemetry-5h`, `fallback`, `server-delay`, `backoff`. Retry reason labels are sanitized categories/codes and must not persist arbitrary full error text merely for HUD rendering.
+
+`agy-retryctl retry scheduler` is a deterministic, local-only diagnostic and must never generate a model turn.

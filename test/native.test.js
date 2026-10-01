@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
-import {mergeStatusline,loadNative,renderNativeStatusline,scheduleFromStop,scheduleFromPreInvocation,runNativeWorker,saveNative,visibleWidth,selectDisplayQuotas} from '../src/native.js';
+import {mergeStatusline,loadNative,renderNativeStatusline,scheduleFromStop,scheduleFromPreInvocation,runNativeWorker,saveNative,visibleWidth,selectDisplayQuotas,schedulerHealth,retrySchedulerDiagnostics,fmtCountdown} from '../src/native.js';
 
 const conv='12345678-abcd-ef01-2345-6789abcdef01';
 function temp(prefix='agy-native-'){return fs.mkdtempSync(path.join(os.tmpdir(),prefix));}
@@ -8,8 +8,8 @@ function payload(extra={},cwd='/tmp/project'){return {email:'secret@example.com'
 test('native statusline stores sanitized active-session telemetry and renders retry state',()=>{
  const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');const state=mergeStatusline(root,payload(),now);
  assert.equal(state.snapshot.contextPercent,42);assert.equal(state.snapshot.quota.length,2);assert.equal(state.status,'IDLE');
- state.status='WAIT_QUOTA';state.nextRetryAt=now+3600000;saveNative(root,state);
- const text=renderNativeStatusline(payload(),loadNative(root,conv),now,{color:false});assert.match(text,/Gemini Test/);assert.match(text,/ctx .*42%/);assert.match(text,/5h .*0%/);assert.match(text,/week .*80%/);assert.match(text,/retry:quota/);assert.match(text,/↻ 1h00m/);
+ state.status='WAIT_QUOTA';state.retryKind='quota';state.retryLabel='QUOTA';state.nextRetryAt=now+3600000;state.waitStartedAt=now;state.config={maxQuotaRetries:2,maxTransientRetries:6};state.retryIncident={id:'ri-demo',status:'WAITING',kind:'quota'};state.scheduler={status:'WAITING',incidentId:'ri-demo',workerPid:process.pid,workerStartedAt:now,lastHeartbeatAt:now,nextRetryAt:state.nextRetryAt,deadlineSource:'server',retryLabel:'QUOTA',attempt:1,maxAttempts:2};saveNative(root,state);
+ const text=renderNativeStatusline(payload(),loadNative(root,conv),now,{color:false});assert.match(text,/Gemini Test/);assert.match(text,/ctx .*42%/);assert.match(text,/5h .*0%/);assert.match(text,/week .*80%/);assert.match(text,/retry:WAIT 01:00:00/);assert.match(text,/QUOTA/);assert.match(text,/1\/2/);assert.match(text,/sched:OK/);
  assert.doesNotMatch(text,/secret@example\.com/);
  const telemetryText=fs.readdirSync(path.join(root,'telemetry')).map(f=>fs.readFileSync(path.join(root,'telemetry',f),'utf8')).join('');assert.doesNotMatch(telemetryText,/secret@example\.com/);
 });
@@ -145,9 +145,9 @@ test('HUD metric grid keeps labels, bars, percentages and detail columns visuall
  for(const row of rows)assert.ok(visibleWidth(row)<=96,`row overflow ${visibleWidth(row)}: ${row}`);
 });
 
-test('HUD shows retry wait progress percentage instead of inventing agent task completion',()=>{
- const now=10_000,state={status:'WAIT_BACKOFF',retryKind:'transient',waitStartedAt:0,startedAt:0,nextRetryAt:20_000,transientRetries:1,quotaRetries:0,snapshot:{agentState:'idle'}};
- const text=renderNativeStatusline(payload({quota:{},terminal_width:80}),state,now,{color:false});assert.match(text,/retry:api/);assert.match(text,/50%/);assert.match(text,/#2/);
+test('HUD shows retry countdown, transient reason, attempt budget and scheduler health',()=>{
+ const now=10_000,state={status:'WAIT_BACKOFF',retryKind:'transient',retryLabel:'503',waitStartedAt:0,startedAt:0,nextRetryAt:20_000,transientRetries:1,quotaRetries:0,config:{maxTransientRetries:6,maxQuotaRetries:2},retryIncident:{id:'ri-503',status:'WAITING'},scheduler:{status:'WAITING',incidentId:'ri-503',workerPid:process.pid,workerStartedAt:0,lastHeartbeatAt:now,nextRetryAt:20_000,deadlineSource:'backoff',retryLabel:'503',attempt:2,maxAttempts:6},snapshot:{agentState:'idle'}};
+ const text=renderNativeStatusline(payload({quota:{},terminal_width:120}),state,now,{color:false});assert.match(text,/retry:WAIT 00:10/);assert.match(text,/503/);assert.match(text,/2\/6/);assert.match(text,/sched:OK/);assert.doesNotMatch(text,/50%/);
 });
 
 
@@ -206,4 +206,28 @@ test('worker aborts a pending retry if a second CLI instance opens the same conv
  scheduleFromStop(root,{executionNum:1,terminationReason:'error',error:'503 service unavailable',fullyIdle:true,conversationId:conv,workspacePaths:[workspace]},{now,config:{transientBaseMs:1000,transientCapMs:1000,jitterMs:0,maxJobElapsedMs:60000},spawnWorker:(id,x)=>{incident=x;}});
  mergeStatusline(root,p,now+500,{env:{TMUX_PANE:'%2'}});let t=now,calls=0;const out=await runNativeWorker(root,conv,{expectedIncidentId:incident,now:()=>t,sleep:async ms=>{t+=ms;},adapter:()=>{calls++;throw Error('multi CLI must never dispatch');}});
  assert.equal(out.status,'MULTI_CLI');assert.equal(calls,0);assert.equal(out.retryIncident.status,'BLOCKED');
+});
+
+
+test('scheduler diagnostics distinguish OK, STALE and LOST without model or quota polling',()=>{
+ const now=20_000,state={status:'WAIT_BACKOFF',retryKind:'transient',retryLabel:'503',nextRetryAt:80_000,transientRetries:0,config:{maxTransientRetries:6,maxQuotaRetries:2},retryIncident:{id:'ri-health',status:'WAITING'},scheduler:{status:'WAITING',incidentId:'ri-health',workerPid:321,workerStartedAt:1_000,lastHeartbeatAt:19_000,nextRetryAt:80_000,deadlineSource:'backoff',retryLabel:'503',attempt:1,maxAttempts:6}};
+ assert.equal(schedulerHealth(state,{now,pidAlive:()=>true}).status,'OK');
+ state.scheduler.lastHeartbeatAt=now-80_000;assert.equal(schedulerHealth(state,{now,pidAlive:()=>true}).status,'STALE');
+ assert.equal(schedulerHealth(state,{now,pidAlive:()=>false}).status,'LOST');
+ const d=retrySchedulerDiagnostics(state,{now,pidAlive:()=>true});assert.equal(d.status,'STALE');assert.equal(d.retryIn,'01:00');assert.equal(d.deadlineSource,'backoff');assert.equal(d.retryLabel,'503');assert.equal(d.attempt,1);assert.equal(d.maxAttempts,6);
+});
+
+test('countdown formatting stays compact from seconds through multi-day waits',()=>{
+ assert.equal(fmtCountdown(59_000),'00:59');assert.equal(fmtCountdown((2*3600+23*60+10)*1000),'02:23:10');assert.equal(fmtCountdown((2*86400+3*3600+4*60)*1000),'2d 03:04');
+});
+
+test('schedule metadata records worker pid, deadline source, retry reason and budget',()=>{
+ const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');mergeStatusline(root,payload({quota:{}}),now);const fakePid=424242;
+ const out=scheduleFromStop(root,{executionNum:1,terminationReason:'error',error:'503 service unavailable',fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project']},{now,config:{transientBaseMs:60_000,transientCapMs:900_000,jitterMs:0,maxTransientRetries:6},spawnWorker:()=>fakePid});assert.equal(out.scheduled,true);assert.equal(out.workerPid,fakePid);
+ const state=loadNative(root,conv);assert.equal(state.status,'WAIT_BACKOFF');assert.equal(state.retryLabel,'503');assert.equal(state.scheduler.workerPid,fakePid);assert.equal(state.scheduler.deadlineSource,'backoff');assert.equal(state.scheduler.attempt,1);assert.equal(state.scheduler.maxAttempts,6);assert.equal(state.scheduler.nextRetryAt,now+60_000);
+});
+
+test('quota scheduler metadata records server reset source and quota budget',()=>{
+ const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');mergeStatusline(root,payload({quota:{}}),now);const error='Individual quota reached. Resets in 2h23m10s';
+ scheduleFromStop(root,{executionNum:2,terminationReason:'error',error,fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project']},{now,config:{resetMarginMs:90_000,jitterMs:0,maxQuotaRetries:2},spawnWorker:()=>process.pid});const state=loadNative(root,conv);assert.equal(state.retryLabel,'QUOTA');assert.equal(state.scheduler.deadlineSource,'server');assert.equal(state.scheduler.attempt,1);assert.equal(state.scheduler.maxAttempts,2);assert.equal(state.scheduler.retryLabel,'QUOTA');
 });

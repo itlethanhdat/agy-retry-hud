@@ -16,6 +16,7 @@ Use the deterministic `agy-retryctl` command. Do not edit state files directly.
    - only this conversation: set global off, then `agy-retryctl retry session on`
    - conversation on/off/inherit: `agy-retryctl retry session on|off|inherit`
    - clear only the current retry incident while keeping retry enabled: `agy-retryctl retry clear`
+   - inspect countdown/worker health without sending a model turn: `agy-retryctl retry scheduler --json`
 3. Prefer exact conversation resolution. If status reports `conversationResolution: workspace-latest`, tell the user the conversation was inferred from cwd; in tmux the plugin should normally resolve from the current pane binding.
 4. Run `agy-retryctl retry status --json` again and report effective state.
 5. Never override `WEEKLY_BLOCKED`; weekly exhaustion is a hard safety gate.

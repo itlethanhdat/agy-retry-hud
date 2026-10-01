@@ -1,10 +1,10 @@
-# AGY Retry HUD v0.4.8
+# AGY Retry HUD v0.4.9
 
 Native HUD + policy-controlled Auto Retry + Portable Handoff cho **Antigravity CLI (`agy`)**.
 
 `agy-retry-hud` giữ nguyên TUI gốc của AGY. Plugin dùng native status line để hiển thị context/quota/trạng thái, Stop hook để phát hiện lỗi, worker nền để retry có kiểm soát, và `agy-retryctl` + plugin skills để quản lý retry/handoff.
 
-> **Release status:** v0.4.8 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
+> **Release status:** v0.4.9 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
 
 ## Tính năng chính
 
@@ -167,6 +167,66 @@ và worker **không gửi model turn**. Nếu weekly telemetry stale/unknown tr�
 
 
 
+
+
+## v0.4.9 Retry countdown + scheduler health
+
+HUD không chỉ hiển thị rằng retry đang bật. Khi có một retry incident đang chờ, header hiển thị **countdown, loại lỗi, attempt và scheduler health**:
+
+```text
+╭─ ● READY │ Gemini 3.8 Flash │ retry:WAIT 00:59 · 503 · 1/6 · sched:OK
+╰─ ctx ██░░░░░░ 24% │ 5h ███████░ 82% │ week ██████░░ 71%
+```
+
+Quota dài:
+
+```text
+╭─ ● READY │ Gemini 3.8 Flash │ retry:WAIT 02:23:10 · QUOTA · 1/2 · sched:OK
+╰─ ctx ██░░░░░░ 24% │ 5h ░░░░░░░░ 0% │ week ██████░░ 71%
+```
+
+Scheduler health:
+
+- `sched:OK`: detached worker PID còn sống và heartbeat còn mới.
+- `sched:STALE`: worker còn sống nhưng heartbeat đã quá hạn.
+- `sched:LOST`: worker không còn sống hoặc scheduler/incident/deadline không khớp.
+- `CHECK`: deadline đã tới, worker đang kiểm tra policy/quota/activity/multi-CLI.
+- `DISPATCH`: worker đã qua safety gates và đang chuẩn bị gửi continuation.
+- `RUNNING`: continuation đã được gửi và đang chờ terminal result.
+
+Countdown chỉ tính từ persistent `nextRetryAt`; HUD không gọi model và không poll `/usage` mỗi giây. Worker heartbeat được cập nhật local trong lúc chờ.
+
+Inspect scheduler trực tiếp:
+
+```bash
+agy-retryctl retry scheduler
+agy-retryctl retry scheduler --json
+```
+
+Ví dụ JSON:
+
+```json
+{
+  "nativeStatus": "WAIT_BACKOFF",
+  "scheduler": {
+    "status": "OK",
+    "retryIn": "00:59",
+    "retryLabel": "503",
+    "attempt": 1,
+    "maxAttempts": 6,
+    "deadlineSource": "backoff",
+    "workerAlive": true
+  }
+}
+```
+
+Các nguồn deadline:
+
+- `server`: quota reset được lấy trực tiếp từ lỗi server.
+- `telemetry-5h`: Stop error thiếu text nhưng statusline xác nhận bucket 5h đã cạn.
+- `fallback`: individual quota xác định nhưng không có reset đáng tin cậy, dùng fallback 5h.
+- `server-delay`: transient API có retry delay rõ ràng.
+- `backoff`: transient API dùng exponential backoff (`1m → 2m → 4m → 8m → 15m...`).
 
 ## v0.4.8 Individual quota retry hardening
 

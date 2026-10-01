@@ -986,3 +986,16 @@ This plan is ready for execution.
 - [x] Add sanitized `lastStop` diagnostics.
 - [x] Add negative control so healthy 5h telemetry cannot fabricate a quota incident.
 - [x] Run full regression: 108/108 PASS.
+
+
+## v0.4.9 execution update
+
+- [x] Replace retry progress percentage with wall-clock countdown in native HUD.
+- [x] Show sanitized retry reason (`503`, `QUOTA`, etc.) and attempt/max budget.
+- [x] Persist detached-worker PID/heartbeat/deadline-source scheduler metadata.
+- [x] Heartbeat long waits without polling model/quota endpoints.
+- [x] Expose `OK/STALE/LOST/CHECK/DISPATCH/RUNNING` health/state.
+- [x] Add `agy-retryctl retry scheduler [--json]`.
+- [x] Embed scheduler diagnostics in `retry status --json`.
+- [x] Preserve weekly/multi-CLI/manual-supersede safety gates.
+- [x] Full regression: 113/113 PASS.

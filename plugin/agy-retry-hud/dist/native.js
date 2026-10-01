@@ -17,6 +17,8 @@ const WAITING = new Set(['WAIT_QUOTA','WAIT_BACKOFF']);
 const INCIDENT_ACTIVE = new Set(['ARMED','WAITING','DISPATCHING']);
 const MANUAL_SUPERSEDE_STATES = new Set(['WAIT_QUOTA','WAIT_BACKOFF','RUNNING','NEEDS_USER','PAUSED_UNCERTAIN','MULTI_CLI']);
 const TERMINAL_INSTANCE_TTL_MS=30000;
+const SCHEDULER_HEARTBEAT_INTERVAL_MS=15000;
+const SCHEDULER_HEARTBEAT_STALE_MS=75000;
 
 export function nativeRoot({platform=process.platform,home=os.homedir(),env=process.env}={}){
  if(env.AGY_RETRY_STATE_DIR)return path.resolve(env.AGY_RETRY_STATE_DIR,'native');
@@ -65,7 +67,7 @@ export function snapshotFromStatusline(payload,now=Date.now()){
  const id=payload?.conversation_id||payload?.session_id;if(!validConversation(id))throw Error('statusline missing conversation id');
  const context=payload?.context_window;const pct=Number.isFinite(context?.used_percentage)?context.used_percentage:null;
  const cwd=payload?.workspace?.current_dir||payload?.cwd||'';
- return {schemaVersion:1,conversationId:id,cwd:typeof cwd==='string'?cwd:'',model:typeof payload?.model?.id==='string'?payload.model.id:'',status:'IDLE',phase:'native',createdAt:now,updatedAt:now,startedAt:now,transientRetries:0,quotaRetries:0,nextRetryAt:null,retryKind:'',reason:'',message:DEFAULT_RESUME_MESSAGE,retryIncident:null,handoff:null,snapshot:{observedAt:now,agentState:payload?.agent_state||'unknown',contextPercent:pct,quota:quotaFromStatus(payload,now),toolConfirmationPending:payload?.tool_confirmation_pending===true,pendingInputCount:Number.isFinite(payload?.pending_input_count)?payload.pending_input_count:0,taskCount:Number.isFinite(payload?.task_count)?payload.task_count:0,artifactCount:Number.isFinite(payload?.artifact_count)?payload.artifact_count:0,terminalWidth:Number.isFinite(payload?.terminal_width)?payload.terminal_width:null}};
+ return {schemaVersion:1,conversationId:id,cwd:typeof cwd==='string'?cwd:'',model:typeof payload?.model?.id==='string'?payload.model.id:'',status:'IDLE',phase:'native',createdAt:now,updatedAt:now,startedAt:now,transientRetries:0,quotaRetries:0,nextRetryAt:null,retryKind:'',retryLabel:'',reason:'',message:DEFAULT_RESUME_MESSAGE,retryIncident:null,scheduler:null,handoff:null,snapshot:{observedAt:now,agentState:payload?.agent_state||'unknown',contextPercent:pct,quota:quotaFromStatus(payload,now),toolConfirmationPending:payload?.tool_confirmation_pending===true,pendingInputCount:Number.isFinite(payload?.pending_input_count)?payload.pending_input_count:0,taskCount:Number.isFinite(payload?.task_count)?payload.task_count:0,artifactCount:Number.isFinite(payload?.artifact_count)?payload.artifact_count:0,terminalWidth:Number.isFinite(payload?.terminal_width)?payload.terminal_width:null}};
 }
 export function mergeStatusline(root,payload,now=Date.now(),{env=process.env}={}){
  const id=payload?.conversation_id||payload?.session_id;
@@ -91,6 +93,38 @@ function fmtMs(ms){
  if(h>=10)return `${h}h${m?String(m).padStart(2,'0')+'m':''}`;
  if(h)return `${h}h${String(m).padStart(2,'0')}m`;
  return `${m}m${String(sec).padStart(2,'0')}s`;
+}
+export function fmtCountdown(ms){
+ const total=Math.max(0,Math.ceil(Number(ms)||0)/1000),s=Math.floor(total%60),m=Math.floor(total/60)%60,h=Math.floor(total/3600)%24,d=Math.floor(total/86400);
+ if(d)return `${d}d ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+ if(Math.floor(total/3600)>0)return `${String(Math.floor(total/3600)).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+ return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+function defaultPidAlive(pid){
+ if(!Number.isInteger(pid)||pid<=0)return false;try{process.kill(pid,0);return true;}catch(e){return e?.code==='EPERM';}
+}
+export function schedulerHealth(state,{now=Date.now(),pidAlive=defaultPidAlive}={}){
+ const scheduler=state?.scheduler;if(!scheduler)return {status:WAITING.has(state?.status)?'LOST':'IDLE',workerAlive:false,heartbeatFresh:false};
+ const workerAlive=pidAlive(scheduler.workerPid),heartbeatFresh=Number.isFinite(scheduler.lastHeartbeatAt)&&now-scheduler.lastHeartbeatAt<=SCHEDULER_HEARTBEAT_STALE_MS;
+ if(['CHECKING','DISPATCHING','RUNNING'].includes(scheduler.status)){
+  if(!workerAlive)return {status:'LOST',workerAlive:false,heartbeatFresh};
+  return {status:scheduler.status==='CHECKING'?'CHECK':scheduler.status==='DISPATCHING'?'DISPATCH':'RUNNING',workerAlive:true,heartbeatFresh};
+ }
+ if(WAITING.has(state?.status)){
+  if(scheduler.incidentId!==state?.retryIncident?.id||scheduler.nextRetryAt!==state?.nextRetryAt)return {status:'LOST',workerAlive,heartbeatFresh,reason:'scheduler state mismatch'};
+  if(workerAlive&&heartbeatFresh)return {status:'OK',workerAlive:true,heartbeatFresh:true};
+  if(workerAlive)return {status:'STALE',workerAlive:true,heartbeatFresh:false};
+  if(scheduler.status==='STARTING'&&Number.isFinite(scheduler.requestedAt)&&now-scheduler.requestedAt<10000)return {status:'START',workerAlive:false,heartbeatFresh};
+  return {status:'LOST',workerAlive:false,heartbeatFresh};
+ }
+ return {status:scheduler.status||'IDLE',workerAlive,heartbeatFresh};
+}
+function retryAttempt(state){
+ const quota=['quota','long-quota'].includes(state?.retryKind),attempt=(quota?(state?.quotaRetries||0):(state?.transientRetries||0))+1,max=quota?(state?.config?.maxQuotaRetries??defaults.maxQuotaRetries):(state?.config?.maxTransientRetries??defaults.maxTransientRetries);return {attempt,max};
+}
+export function retrySchedulerDiagnostics(state,{now=Date.now(),pidAlive}={}){
+ const health=schedulerHealth(state,{now,pidAlive}),remainingMs=Number.isFinite(state?.nextRetryAt)?Math.max(0,state.nextRetryAt-now):null,{attempt,max}=retryAttempt(state||{}),s=state?.scheduler||{};
+ return {status:health.status,workerAlive:health.workerAlive,heartbeatFresh:health.heartbeatFresh,workerPid:Number.isInteger(s.workerPid)?s.workerPid:null,workerStartedAt:s.workerStartedAt||null,lastHeartbeatAt:s.lastHeartbeatAt||null,incidentId:s.incidentId||state?.retryIncident?.id||null,nextRetryAt:Number.isFinite(state?.nextRetryAt)?state.nextRetryAt:null,retryAt:Number.isFinite(state?.nextRetryAt)?new Date(state.nextRetryAt).toISOString():null,remainingMs,retryIn:remainingMs===null?null:fmtCountdown(remainingMs),deadlineSource:s.deadlineSource||null,retryLabel:s.retryLabel||state?.retryLabel||null,attempt:s.attempt||attempt,maxAttempts:s.maxAttempts||max};
 }
 function humanTokens(n){
  if(!Number.isFinite(n))return '?';const a=Math.abs(n);
@@ -157,10 +191,11 @@ function retryDisplay(state,now,color,controls){
  if(incident?.status==='SUPERSEDED'&&Number.isFinite(incident.supersededAt)&&now-incident.supersededAt<60000)return ansi('90','retry:SUPERSEDED',color);
  if(incident?.status==='ARMED')return ansi('93','retry:ARMED',color);
  if(WAITING.has(state?.status)&&Number.isFinite(state.nextRetryAt)){
-  const started=Number.isFinite(state.waitStartedAt)?state.waitStartedAt:Number.isFinite(state.startedAt)?state.startedAt:now;
-  const total=Math.max(1,state.nextRetryAt-started),done=Math.max(0,Math.min(total,now-started)),pct=Math.round(done/total*100),attempt=state.retryKind==='transient'?(state.transientRetries||0)+1:(state.quotaRetries||0)+1;
-  const label=state.status==='WAIT_QUOTA'?'quota':'api';return `${ansi('93',`retry:${label}`,color)} ${progressBar(pct,6,{kind:'retry',color})} ${pct}% ${ansi('90',`↻ ${fmtMs(state.nextRetryAt-now)} #${attempt}`,color)}`;
+  const d=retrySchedulerDiagnostics(state,{now}),healthCode=['LOST','STALE'].includes(d.status)?'91':d.status==='OK'?'92':'96',waitCode=d.remainingMs!==null&&d.remainingMs<60000?'38;5;208':d.remainingMs!==null&&d.remainingMs<300000?'38;5;208':'93';
+  const label=d.retryLabel||(['quota','long-quota'].includes(state.retryKind)?'QUOTA':'API');
+  return `${ansi(waitCode,`retry:WAIT ${d.retryIn}`,color)} ${ansi('90','·',color)} ${ansi('93',label,color)} ${ansi('90','·',color)} ${ansi('90',`${d.attempt}/${d.maxAttempts}`,color)} ${ansi('90','·',color)} ${ansi(healthCode,`sched:${d.status}`,color)}`;
  }
+ if(state?.status==='RUNNING'&&state?.scheduler){const d=retrySchedulerDiagnostics(state,{now});const label=d.retryLabel||'API';return `${ansi('96',`retry:${d.status==='DISPATCH'?'DISPATCH':'RUNNING'}`,color)} ${ansi('90','·',color)} ${ansi('93',label,color)} ${ansi('90','·',color)} ${ansi('90',`${d.attempt}/${d.maxAttempts}`,color)}`;}
  if(override==='on')return ansi('92','retry:SESSION',color);
  return ansi('90','retry:ON',color);
 }
@@ -260,7 +295,7 @@ export function clearRetryState(root,id,{now=Date.now(),reason='manual_clear'}={
  const state=loadNative(root,id);if(!state)return {conversationId:id,cleared:false,status:'IDLE',reason:'no native retry state'};
  const previousStatus=state.status,previousReason=state.reason||'',incidentId=state.retryIncident?.id||null;
  if(state.retryIncident&&!['RESOLVED','SUPERSEDED','SUCCEEDED','CANCELED'].includes(state.retryIncident.status))setIncidentStatus(state,'SUPERSEDED',now,{supersededAt:now,supersededBy:reason,previousStatus,previousReason});
- state.status='IDLE';state.reason='retry state cleared by user';state.nextRetryAt=null;state.retryKind='';state.errorFingerprint='';saveNative(root,state);
+ state.status='IDLE';state.reason='retry state cleared by user';state.nextRetryAt=null;state.retryKind='';state.retryLabel='';state.errorFingerprint='';if(state.scheduler)setSchedulerStatus(state,'SUPERSEDED',now,{nextRetryAt:null,completedAt:now});saveNative(root,state);
  return {conversationId:id,cleared:true,status:state.status,incidentId,incidentStatus:state.retryIncident?.status||null,previousStatus,previousReason};
 }
 function armIncident(state,payload,fp,kind,now){
@@ -301,6 +336,19 @@ function quotaFallbackFromTelemetry(payload,state,c,now){
 function recordLastStop(state,payload,c,source,now){
  state.lastStop={at:now,executionNum:Number.isInteger(payload?.executionNum)?payload.executionNum:null,terminationReason:typeof payload?.terminationReason==='string'?payload.terminationReason:'',fullyIdle:payload?.fullyIdle===true,hadError:typeof payload?.error==='string'?Boolean(payload.error.trim()):Boolean(payload?.error),classification:c?.kind||'unknown',classificationSource:source||'payload'};
 }
+function errorText(raw){return typeof raw==='string'?raw:typeof raw?.message==='string'?raw.message:'';}
+function retryLabelFor(c,raw){
+ if(['quota','long-quota'].includes(c?.kind))return 'QUOTA';const text=errorText(raw);if(c?.kind!=='transient')return String(c?.kind||'API').toUpperCase();
+ if(/\b503\b|service unavailable/i.test(text))return '503';if(/\b502\b|bad gateway/i.test(text))return '502';if(/\b504\b|gateway timeout/i.test(text))return '504';if(/\b429\b|RESOURCE_EXHAUSTED/i.test(text))return '429';if(/ETIMEDOUT|timeout/i.test(text))return 'TIMEOUT';if(/ECONNRESET|EAI_AGAIN|ECONNREFUSED|network|transport/i.test(text))return 'NET';return 'API';
+}
+function deadlineSourceFor(c,classificationSource='payload'){
+ if(classificationSource==='telemetry-5h')return 'telemetry-5h';if(['quota','long-quota'].includes(c?.kind))return c?.resetAt?'server':'fallback';if(c?.kind==='transient')return c?.retryAfterMs||c?.resetAt?'server-delay':'backoff';return null;
+}
+function schedulerPlan(state,c,classificationSource,nextRetryAt,now){
+ const {attempt,max}=retryAttempt(state);return {status:'STARTING',incidentId:state.retryIncident?.id||null,requestedAt:now,workerPid:null,workerStartedAt:null,lastHeartbeatAt:now,nextRetryAt,deadlineSource:deadlineSourceFor(c,classificationSource),retryLabel:state.retryLabel||retryLabelFor(c,''),attempt,maxAttempts:max};
+}
+function setSchedulerStatus(state,status,now,extra={}){state.scheduler={...(state.scheduler||{}),status,lastHeartbeatAt:now,...extra};return state.scheduler;}
+function heartbeatScheduler(root,state,now){if(!state?.scheduler)return;const last=state.scheduler.lastHeartbeatAt||0;if(now-last<SCHEDULER_HEARTBEAT_INTERVAL_MS)return;state.scheduler.lastHeartbeatAt=now;state.scheduler.workerPid=process.pid;saveNative(root,state);}
 export function weeklyGate(state,now=Date.now(),retryConfig=loadControlConfig().retry){
  if(retryConfig.stopWhenWeeklyExhausted===false)return {status:'disabled'};
  const observed=state?.snapshot?.observedAt,week=(state?.snapshot?.quota||[]).find(b=>b.window==='weekly');
@@ -314,7 +362,7 @@ function applyControlState(root,state,controlConfig){
  state.retryOverride=controls.retryOverride;state.handoffOverride=controls.handoffOverride;state.effectiveRetry=controls.retryEnabled;state.effectiveHandoff=controls.handoffEnabled;return controls;
 }
 function newNativeState(id,telemetry,payload,now){
- return {schemaVersion:1,conversationId:id,cwd:telemetry?.cwd||payload.workspacePaths?.[0]||'',model:telemetry?.model||payload.modelName||'',status:'IDLE',phase:'native',createdAt:now,startedAt:now,transientRetries:0,quotaRetries:0,nextRetryAt:null,retryKind:'',reason:'',message:DEFAULT_RESUME_MESSAGE,retryIncident:null,lastStop:null,handoff:null,snapshot:telemetry?.snapshot||{observedAt:now,agentState:'unknown',contextPercent:null,quota:[],toolConfirmationPending:false,pendingInputCount:0,taskCount:0,artifactCount:0,terminalWidth:null}};
+ return {schemaVersion:1,conversationId:id,cwd:telemetry?.cwd||payload.workspacePaths?.[0]||'',model:telemetry?.model||payload.modelName||'',status:'IDLE',phase:'native',createdAt:now,startedAt:now,transientRetries:0,quotaRetries:0,nextRetryAt:null,retryKind:'',retryLabel:'',reason:'',message:DEFAULT_RESUME_MESSAGE,retryIncident:null,scheduler:null,lastStop:null,handoff:null,snapshot:telemetry?.snapshot||{observedAt:now,agentState:'unknown',contextPercent:null,quota:[],toolConfirmationPending:false,pendingInputCount:0,taskCount:0,artifactCount:0,terminalWidth:null}};
 }
 export function scheduleFromStop(root,payload,{now=Date.now(),config={},controlConfig,spawnWorker}={}){
  const id=payload?.conversationId;if(!validConversation(id))return {decision:'stop',scheduled:false,reason:'missing conversation id'};
@@ -335,13 +383,13 @@ export function scheduleFromStop(root,payload,{now=Date.now(),config={},controlC
  }
  if(c.kind==='none'){
   if(ctl.retry.autoDisarmIncidentOnSuccess!==false&&activeIncident(state))setIncidentStatus(state,'RESOLVED',now,{resolvedAt:now,resolution:'normal_stop',resolvedExecutionNum:incidentSequence(payload)});
-  if(WAITING.has(state.status)||state.status==='RUNNING'){state.status='IDLE';state.reason='native AGY completed normally; pending auto-retry resolved';state.nextRetryAt=null;state.errorFingerprint='';}
+  if(WAITING.has(state.status)||state.status==='RUNNING'){state.status='IDLE';state.reason='native AGY completed normally; pending auto-retry resolved';state.nextRetryAt=null;state.errorFingerprint='';if(state.scheduler)setSchedulerStatus(state,'RESOLVED',now,{nextRetryAt:null,completedAt:now});}
   saveNative(root,state);return {decision:'stop',scheduled:false,reason:'normal stop'};
  }
- if(!controls.retryEnabled){if(activeIncident(state))setIncidentStatus(state,'CANCELED',now,{canceledAt:now,resolution:'retry_policy_off'});state.status='RETRY_OFF';state.reason='automatic retry disabled by policy';state.nextRetryAt=null;saveNative(root,state);return {decision:'stop',scheduled:false,reason:state.reason};}
- const weekly=weeklyGate(state,now,ctl.retry);if(weekly.status==='blocked'){if(activeIncident(state))setIncidentStatus(state,'BLOCKED',now,{blockedAt:now,resolution:'weekly_quota'});state.status='WEEKLY_BLOCKED';state.reason='weekly quota at or below safety threshold';state.nextRetryAt=null;state.weeklyResetAt=weekly.bucket.resetAt;saveNative(root,state);return {decision:'stop',scheduled:false,reason:state.reason};}
+ if(!controls.retryEnabled){if(activeIncident(state))setIncidentStatus(state,'CANCELED',now,{canceledAt:now,resolution:'retry_policy_off'});state.status='RETRY_OFF';state.reason='automatic retry disabled by policy';state.nextRetryAt=null;if(state.scheduler)setSchedulerStatus(state,'CANCELED',now,{nextRetryAt:null,completedAt:now});saveNative(root,state);return {decision:'stop',scheduled:false,reason:state.reason};}
+ const weekly=weeklyGate(state,now,ctl.retry);if(weekly.status==='blocked'){if(activeIncident(state))setIncidentStatus(state,'BLOCKED',now,{blockedAt:now,resolution:'weekly_quota'});state.status='WEEKLY_BLOCKED';state.reason='weekly quota at or below safety threshold';state.nextRetryAt=null;state.weeklyResetAt=weekly.bucket.resetAt;if(state.scheduler)setSchedulerStatus(state,'BLOCKED',now,{nextRetryAt:null,completedAt:now});saveNative(root,state);return {decision:'stop',scheduled:false,reason:state.reason};}
  c=applyQuotaSnapshot(c,state,now);const fp=fingerprint(payload.error),armed=armIncident(state,payload,fp,c.kind,now);
- const activeInstances=activeTerminalInstances(telemetry,now);if(['quota','long-quota','transient'].includes(c.kind)&&activeInstances.length>1){setIncidentStatus(state,'BLOCKED',now,{blockedAt:now,resolution:'multi_cli',terminalInstanceCount:activeInstances.length});state.status='MULTI_CLI';state.reason='conversation is active in multiple AGY CLI instances';state.nextRetryAt=null;state.errorFingerprint=fp;saveNative(root,state);return {decision:'stop',scheduled:false,reason:state.reason,incidentId:state.retryIncident?.id,multiCli:true};}
+ const activeInstances=activeTerminalInstances(telemetry,now);if(['quota','long-quota','transient'].includes(c.kind)&&activeInstances.length>1){setIncidentStatus(state,'BLOCKED',now,{blockedAt:now,resolution:'multi_cli',terminalInstanceCount:activeInstances.length});state.status='MULTI_CLI';state.reason='conversation is active in multiple AGY CLI instances';state.nextRetryAt=null;state.errorFingerprint=fp;if(state.scheduler)setSchedulerStatus(state,'BLOCKED',now,{nextRetryAt:null,completedAt:now});saveNative(root,state);return {decision:'stop',scheduled:false,reason:state.reason,incidentId:state.retryIncident?.id,multiCli:true};}
  if(armed.duplicate&&WAITING.has(state.status)&&state.nextRetryAt>now)return {decision:'stop',scheduled:false,reason:'duplicate stop',incidentId:armed.incident.id};
  if(!['quota','long-quota','transient'].includes(c.kind)){
   setIncidentStatus(state,'NEEDS_USER',now,{resolution:c.kind});state.status='NEEDS_USER';state.reason=c.kind;state.nextRetryAt=null;state.errorFingerprint=fp;saveNative(root,state);return {decision:'stop',scheduled:false,reason:c.kind,incidentId:state.retryIncident?.id};
@@ -349,8 +397,9 @@ export function scheduleFromStop(root,payload,{now=Date.now(),config={},controlC
  state.startedAt=now;state.transientRetries=0;state.quotaRetries=0;state.message=state.message||DEFAULT_RESUME_MESSAGE;
  const cfg={...defaults,...ctl.retry,...config},d=decide(c,state,now,0,cfg);
  if(!d.action.startsWith('wait_')){setIncidentStatus(state,d.action==='exhausted'?'EXHAUSTED':'NEEDS_USER',now,{resolution:d.reason});state.status=d.action==='exhausted'?'EXHAUSTED':'NEEDS_USER';state.reason=d.reason;saveNative(root,state);return {decision:'stop',scheduled:false,reason:d.reason,incidentId:state.retryIncident?.id};}
- state.status=d.action==='wait_quota'?'WAIT_QUOTA':'WAIT_BACKOFF';state.retryKind=c.kind;state.waitStartedAt=now;state.nextRetryAt=d.at;state.reason=c.kind;state.errorFingerprint=fp;state.config={...cfg};setIncidentStatus(state,'WAITING',now,{nextRetryAt:d.at,kind:c.kind});saveNative(root,state);
- spawnWorker?.(id,state.retryIncident.id);return {decision:'stop',scheduled:true,state,incidentId:state.retryIncident.id};
+ state.status=d.action==='wait_quota'?'WAIT_QUOTA':'WAIT_BACKOFF';state.retryKind=c.kind;state.retryLabel=retryLabelFor(c,payload.error);state.waitStartedAt=now;state.nextRetryAt=d.at;state.reason=c.kind;state.errorFingerprint=fp;state.config={...cfg};setIncidentStatus(state,'WAITING',now,{nextRetryAt:d.at,kind:c.kind,retryLabel:state.retryLabel,deadlineSource:deadlineSourceFor(c,fallback.source)});state.scheduler=schedulerPlan(state,c,fallback.source,d.at,now);saveNative(root,state);
+ let workerPid=null;try{workerPid=spawnWorker?.(id,state.retryIncident.id)??null;}catch(e){state.scheduler.status='LOST';state.scheduler.spawnError=true;state.reason='retry worker failed to start';saveNative(root,state);return {decision:'stop',scheduled:false,state,incidentId:state.retryIncident.id,reason:state.reason};}
+ if(Number.isInteger(workerPid)&&workerPid>0){state.scheduler.workerPid=workerPid;state.scheduler.workerStartedAt=now;state.scheduler.status='WAITING';state.scheduler.lastHeartbeatAt=now;saveNative(root,state);}return {decision:'stop',scheduled:true,state,incidentId:state.retryIncident.id,workerPid};
 }
 
 export function scheduleFromPreInvocation(root,payload,{now=Date.now(),controlConfig}={}){
@@ -362,13 +411,13 @@ export function scheduleFromPreInvocation(root,payload,{now=Date.now(),controlCo
  if(!shouldSupersede)return {decision:'allow',superseded:false,reason:'no supersedable retry state'};
  const incidentId=state.retryIncident?.id||null,previousStatus=state.status,previousReason=state.reason||'';
  if(state.retryIncident)setIncidentStatus(state,'SUPERSEDED',now,{supersededAt:now,supersededBy:'manual_invocation',invocationNum:Number.isInteger(payload?.invocationNum)?payload.invocationNum:null,previousStatus,previousReason});
- state.status='IDLE';state.reason='manual AGY invocation superseded previous retry state';state.nextRetryAt=null;state.retryKind='';state.errorFingerprint='';saveNative(root,state);
+ state.status='IDLE';state.reason='manual AGY invocation superseded previous retry state';state.nextRetryAt=null;state.retryKind='';state.retryLabel='';state.errorFingerprint='';if(state.scheduler)setSchedulerStatus(state,'SUPERSEDED',now,{nextRetryAt:null,completedAt:now});saveNative(root,state);
  return {decision:'allow',superseded:true,recovered:previousStatus==='PAUSED_UNCERTAIN'&&!incidentId,reason:state.reason,incidentId,previousStatus};
 }
 
 
 async function waitUntil(root,id,at,{now=Date.now,sleep=(ms)=>new Promise(r=>setTimeout(r,ms)),expectedIncidentId,requireCurrentIncident=true}={}){
- for(;;){const s=loadNative(root,id);if(!s||!WAITING.has(s.status)||s.nextRetryAt!==at||!incidentMatches(s,expectedIncidentId,{requireCurrent:requireCurrentIncident,statuses:new Set(['WAITING'])}))return false;const left=at-now();if(left<=0)return true;await sleep(Math.min(left,30000));}
+ for(;;){const s=loadNative(root,id);if(!s||!WAITING.has(s.status)||s.nextRetryAt!==at||!incidentMatches(s,expectedIncidentId,{requireCurrent:requireCurrentIncident,statuses:new Set(['WAITING'])}))return false;const tick=now();heartbeatScheduler(root,s,tick);const left=at-tick;if(left<=0)return true;await sleep(Math.min(left,30000));}
 }
 
 async function oneTurn(state,{adapter=startSession,message=state.message||DEFAULT_RESUME_MESSAGE,conversation=state.conversationId,env={AGY_RETRY_NATIVE_WORKER:'1'},beforeSend}={}){
@@ -409,6 +458,7 @@ export async function runNativeWorker(root,id,{now=Date.now,sleep,adapter=startS
  let lease;try{lease=acquire(path.join(root,'locks'),'native:'+id);}catch{return {status:'DUPLICATE_WORKER'};}
  try{
   for(;;){let s=loadNative(root,id);if(!s||TERMINAL.has(s.status)||s.status==='IDLE')return s||{status:'MISSING'};
+   if(s.scheduler){const t=now();s.scheduler.workerPid=process.pid;s.scheduler.workerStartedAt=s.scheduler.workerStartedAt||t;s.scheduler.lastHeartbeatAt=t;if(WAITING.has(s.status))s.scheduler.status='WAITING';saveNative(root,s);}
    const ctl0=loadControlConfig(),requireCurrent=ctl0.retry.requireCurrentIncidentBeforeDispatch!==false;
    if(!incidentMatches(s,expectedIncidentId,{requireCurrent,statuses:new Set(['WAITING','ARMED'])}))return staleRetryResult();
    const incidentIdCurrent=s.retryIncident?.id||expectedIncidentId;
@@ -416,29 +466,30 @@ export async function runNativeWorker(root,id,{now=Date.now,sleep,adapter=startS
    const due=s.nextRetryAt;if(!await waitUntil(root,id,due,{now,sleep,expectedIncidentId:incidentIdCurrent,requireCurrentIncident:requireCurrent}))continue;
    s=loadNative(root,id);if(!s||!WAITING.has(s.status))continue;
    if(!incidentMatches(s,incidentIdCurrent,{requireCurrent,statuses:new Set(['WAITING'])}))return staleRetryResult();
+   setSchedulerStatus(s,'CHECKING',now(),{workerPid:process.pid});saveNative(root,s);
    const live=loadTelemetry(root,id);if(live){s.snapshot=live.snapshot;s.cwd=s.cwd||live.cwd;s.model=s.model||live.model;}
-   const activeInstances=activeTerminalInstances(live,now());if(activeInstances.length>1){setIncidentStatus(s,'BLOCKED',now(),{blockedAt:now(),resolution:'multi_cli',terminalInstanceCount:activeInstances.length});s.status='MULTI_CLI';s.reason='conversation is active in multiple AGY CLI instances';s.nextRetryAt=null;saveNative(root,s);return s;}
-   const ctl=loadControlConfig(),controls=applyControlState(root,s,ctl);if(!controls.retryEnabled){setIncidentStatus(s,'CANCELED',now(),{canceledAt:now(),resolution:'retry_policy_off'});s.status='RETRY_OFF';s.reason='automatic retry disabled before dispatch';s.nextRetryAt=null;saveNative(root,s);return s;}
+   const activeInstances=activeTerminalInstances(live,now());if(activeInstances.length>1){setIncidentStatus(s,'BLOCKED',now(),{blockedAt:now(),resolution:'multi_cli',terminalInstanceCount:activeInstances.length});s.status='MULTI_CLI';s.reason='conversation is active in multiple AGY CLI instances';s.nextRetryAt=null;setSchedulerStatus(s,'BLOCKED',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
+   const ctl=loadControlConfig(),controls=applyControlState(root,s,ctl);if(!controls.retryEnabled){setIncidentStatus(s,'CANCELED',now(),{canceledAt:now(),resolution:'retry_policy_off'});s.status='RETRY_OFF';s.reason='automatic retry disabled before dispatch';s.nextRetryAt=null;setSchedulerStatus(s,'CANCELED',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
    let weekly=weeklyGate(s,now(),ctl.retry);if(['unknown','stale'].includes(weekly.status))weekly=await refreshWeeklyIfNeeded(root,s,now(),quotaProviderFactory);
-   if(weekly.status==='blocked'){setIncidentStatus(s,'BLOCKED',now(),{blockedAt:now(),resolution:'weekly_quota'});s.status='WEEKLY_BLOCKED';s.reason='weekly quota at or below safety threshold';s.weeklyResetAt=weekly.bucket?.resetAt||null;s.nextRetryAt=null;saveNative(root,s);return s;}
-   if(['quota','long-quota'].includes(s.retryKind)&&weekly.status==='unknown'){setIncidentStatus(s,'NEEDS_USER',now(),{resolution:'weekly_quota_unknown'});s.status='NEEDS_USER';s.reason='weekly quota unavailable before quota retry';s.nextRetryAt=null;saveNative(root,s);return s;}
-   if(s.snapshot?.toolConfirmationPending){setIncidentStatus(s,'NEEDS_USER',now(),{resolution:'tool_confirmation_pending'});s.status='NEEDS_USER';s.reason='tool confirmation pending';saveNative(root,s);return s;}
+   if(weekly.status==='blocked'){setIncidentStatus(s,'BLOCKED',now(),{blockedAt:now(),resolution:'weekly_quota'});s.status='WEEKLY_BLOCKED';s.reason='weekly quota at or below safety threshold';s.weeklyResetAt=weekly.bucket?.resetAt||null;s.nextRetryAt=null;setSchedulerStatus(s,'BLOCKED',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
+   if(['quota','long-quota'].includes(s.retryKind)&&weekly.status==='unknown'){setIncidentStatus(s,'NEEDS_USER',now(),{resolution:'weekly_quota_unknown'});s.status='NEEDS_USER';s.reason='weekly quota unavailable before quota retry';s.nextRetryAt=null;setSchedulerStatus(s,'NEEDS_USER',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
+   if(s.snapshot?.toolConfirmationPending){setIncidentStatus(s,'NEEDS_USER',now(),{resolution:'tool_confirmation_pending'});s.status='NEEDS_USER';s.reason='tool confirmation pending';setSchedulerStatus(s,'NEEDS_USER',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
    if((s.snapshot?.pendingInputCount||0)>0||(s.snapshot?.taskCount||0)>0||!['idle','unknown',undefined,null].includes(s.snapshot?.agentState)){
-    setIncidentStatus(s,'SUPERSEDED',now(),{supersededAt:now(),supersededBy:'native_activity'});s.status='IDLE';s.reason='native AGY activity superseded pending retry';s.nextRetryAt=null;saveNative(root,s);return s;
+    setIncidentStatus(s,'SUPERSEDED',now(),{supersededAt:now(),supersededBy:'native_activity'});s.status='IDLE';s.reason='native AGY activity superseded pending retry';s.nextRetryAt=null;setSchedulerStatus(s,'SUPERSEDED',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;
    }
-   if(now()-s.startedAt>=(s.config?.maxJobElapsedMs||defaults.maxJobElapsedMs)){setIncidentStatus(s,'EXHAUSTED',now(),{resolution:'job_budget_expired'});s.status='EXHAUSTED';s.reason='job budget expired';saveNative(root,s);return s;}
+   if(now()-s.startedAt>=(s.config?.maxJobElapsedMs||defaults.maxJobElapsedMs)){setIncidentStatus(s,'EXHAUSTED',now(),{resolution:'job_budget_expired'});s.status='EXHAUSTED';s.reason='job budget expired';setSchedulerStatus(s,'EXHAUSTED',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
    // Re-read the state immediately before dispatch. A manual/new AGY invocation can
    // supersede the incident while the worker is waiting or checking quota.
    const latest=loadNative(root,id);if(!incidentMatches(latest,incidentIdCurrent,{requireCurrent,statuses:new Set(['WAITING'])}))return staleRetryResult();
-   s=latest;setIncidentStatus(s,'DISPATCHING',now(),{dispatchStartedAt:now()});s.status='RUNNING';s.nextRetryAt=null;saveNative(root,s);
-   const beforeSend=async()=>{const current=loadNative(root,id);if(!incidentMatches(current,incidentIdCurrent,{requireCurrent,statuses:new Set(['DISPATCHING'])})){const e=Error('retry incident superseded before dispatch');e.code='STALE_RETRY';throw e;}};
-   let turn;try{turn=handoffReadyForRollover(s)?await rolloverTurn(root,s,{adapter,beforeSend}):await oneTurn(s,{adapter,beforeSend});}catch(e){if(e?.code==='STALE_RETRY')return staleRetryResult(e.message);s.status='PAUSED_UNCERTAIN';setIncidentStatus(s,'PAUSED_UNCERTAIN',now(),{resolution:'uncertain_background_outcome'});s.reason='background AGY retry/rollover outcome uncertain';saveNative(root,s);return s; }
-   const result=turn.result,c0=classify(result,now());if(c0.kind==='success'){s.status='SUCCEEDED';setIncidentStatus(s,'SUCCEEDED',now(),{completedAt:now(),resolution:'background_retry_success'});s.reason=turn.newConversation?'rollover continuation completed':'background retry completed';saveNative(root,s);return s;}
-   if(c0.kind==='canceled'){s.status='CANCELED';setIncidentStatus(s,'CANCELED',now(),{canceledAt:now(),resolution:'background_retry_canceled'});s.reason='background retry canceled';saveNative(root,s);return s;}
+   s=latest;const dispatchAt=now();setIncidentStatus(s,'DISPATCHING',dispatchAt,{dispatchStartedAt:dispatchAt});s.status='RUNNING';s.nextRetryAt=null;setSchedulerStatus(s,'DISPATCHING',dispatchAt,{workerPid:process.pid,nextRetryAt:null});saveNative(root,s);
+   const beforeSend=async()=>{const current=loadNative(root,id);if(!incidentMatches(current,incidentIdCurrent,{requireCurrent,statuses:new Set(['DISPATCHING'])})){const e=Error('retry incident superseded before dispatch');e.code='STALE_RETRY';throw e;}setSchedulerStatus(current,'RUNNING',now(),{workerPid:process.pid});saveNative(root,current);};
+   let turn;try{turn=handoffReadyForRollover(s)?await rolloverTurn(root,s,{adapter,beforeSend}):await oneTurn(s,{adapter,beforeSend});}catch(e){if(e?.code==='STALE_RETRY')return staleRetryResult(e.message);s.status='PAUSED_UNCERTAIN';setIncidentStatus(s,'PAUSED_UNCERTAIN',now(),{resolution:'uncertain_background_outcome'});s.reason='background AGY retry/rollover outcome uncertain';setSchedulerStatus(s,'UNCERTAIN',now(),{completedAt:now()});saveNative(root,s);return s; }
+   const result=turn.result,c0=classify(result,now());if(c0.kind==='success'){const t=now();s.status='SUCCEEDED';setIncidentStatus(s,'SUCCEEDED',t,{completedAt:t,resolution:'background_retry_success'});s.reason=turn.newConversation?'rollover continuation completed':'background retry completed';setSchedulerStatus(s,'DONE',t,{completedAt:t});saveNative(root,s);return s;}
+   if(c0.kind==='canceled'){const t=now();s.status='CANCELED';setIncidentStatus(s,'CANCELED',t,{canceledAt:t,resolution:'background_retry_canceled'});s.reason='background retry canceled';setSchedulerStatus(s,'CANCELED',t,{completedAt:t});saveNative(root,s);return s;}
    if(s.retryKind==='transient'||c0.kind==='transient')s.transientRetries=(s.transientRetries||0)+1;else if(['quota','long-quota'].includes(s.retryKind)||['quota','long-quota'].includes(c0.kind))s.quotaRetries=(s.quotaRetries||0)+1;
    const c=applyQuotaSnapshot(c0,s,now()),d=decide(c,s,now(),rng(s.config?.jitterMs||0),s.config||defaults);
-   if(!d.action.startsWith('wait_')){const terminal=d.action==='exhausted'?'EXHAUSTED':'NEEDS_USER';setIncidentStatus(s,terminal,now(),{resolution:d.reason});s.status=terminal;s.reason=d.reason;saveNative(root,s);return s;}
-   s.status=d.action==='wait_quota'?'WAIT_QUOTA':'WAIT_BACKOFF';s.retryKind=c.kind;s.waitStartedAt=now();s.nextRetryAt=d.at;s.reason=c.kind;setIncidentStatus(s,'WAITING',now(),{nextRetryAt:d.at,kind:c.kind,lastFailureFingerprint:fingerprint(result?.error?.message||result?.error||'')});saveNative(root,s);
+   if(!d.action.startsWith('wait_')){const t=now(),terminal=d.action==='exhausted'?'EXHAUSTED':'NEEDS_USER';setIncidentStatus(s,terminal,t,{resolution:d.reason});s.status=terminal;s.reason=d.reason;setSchedulerStatus(s,terminal,t,{nextRetryAt:null,completedAt:t});saveNative(root,s);return s;}
+   const waitAt=now();s.status=d.action==='wait_quota'?'WAIT_QUOTA':'WAIT_BACKOFF';s.retryKind=c.kind;s.retryLabel=retryLabelFor(c,result?.error);s.waitStartedAt=waitAt;s.nextRetryAt=d.at;s.reason=c.kind;setIncidentStatus(s,'WAITING',waitAt,{nextRetryAt:d.at,kind:c.kind,retryLabel:s.retryLabel,deadlineSource:deadlineSourceFor(c,'payload'),lastFailureFingerprint:fingerprint(result?.error?.message||result?.error||'')});const {attempt,max}=retryAttempt(s);setSchedulerStatus(s,'WAITING',waitAt,{workerPid:process.pid,nextRetryAt:d.at,deadlineSource:deadlineSourceFor(c,'payload'),retryLabel:s.retryLabel,attempt,maxAttempts:max});saveNative(root,s);
   }
  }finally{try{lease.release();}catch{}}
 }

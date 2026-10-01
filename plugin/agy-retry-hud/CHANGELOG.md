@@ -1,3 +1,16 @@
+# v0.4.9
+
+- Rebuilt retry HUD around explicit scheduler observability: `retry:WAIT <countdown> · <reason> · <attempt/max> · sched:<health>`.
+- Added compact countdown formatting (`MM:SS`, `HH:MM:SS`, `Nd HH:MM`) so quota/API waits visibly tick down without external polling.
+- Added sanitized retry reason labels such as `503`, `502`, `504`, `429`, `TIMEOUT`, `NET`, `API`, and `QUOTA`; full error text is not persisted for HUD display.
+- Retry scheduler now persists worker PID, worker start, heartbeat, incident id, deadline source, retry reason, next deadline, and attempt budget.
+- Detached retry worker heartbeats while waiting and records `CHECKING → DISPATCHING → RUNNING → DONE/CANCELED/BLOCKED/...` transitions.
+- Added scheduler health evaluation: `OK`, `STALE`, `LOST`, `CHECK`, `DISPATCH`, `RUNNING`. `OK` requires a live worker PID plus a fresh heartbeat.
+- Added `agy-retryctl retry scheduler [--conversation ID] [--json]` for local-only scheduler diagnostics; `retry status --json` now embeds the same scheduler block.
+- Deadline sources are explicit: `server`, `telemetry-5h`, `fallback`, `server-delay`, or `backoff`.
+- Existing quota safety, weekly block, incident-local stale-retry protection, manual supersede, and `MULTI_CLI` gates remain in force.
+- Full offline suite: 113 tests.
+
 # v0.4.8
 
 - Fixed missed auto-retry for real AGY `Individual quota reached ... Resets in ...` errors when the Stop hook arrives with `fullyIdle=false`.
