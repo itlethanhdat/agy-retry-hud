@@ -1,3 +1,17 @@
+# v0.5.0
+
+- Added embedded singleton daemon; no systemd/launchd/Windows Service dependency.
+- Daemon auto-activation is wired through statusline, PreInvocation, and Stop callbacks; AGY currently exposes no SessionStart hook.
+- Waiting retry incidents continue independently of TUI redraws and are rehydrated after daemon restart.
+- Added adaptive scheduling intervals and a shared dispatch semaphore (`maxConcurrentDispatch`, default 1).
+- Added daemon heartbeat/runtime state and local commands: `daemon start|stop|restart|status|enable|disable`.
+- Added HUD modes: `on`, `hide`, `off`; hide preserves background retry/handoff, off disables the plugin runtime.
+- Added `agy-retryctl doctor` combining setup and daemon health.
+- Added skills: `hud-control`, `daemon-control`, and `doctor` (9 packaged skills total).
+- v0.4 waiting incidents are rebound on daemon adoption so old detached workers become stale without losing the stored deadline/counters.
+- Added v0.5 config migration defaults for daemon and HUD visibility.
+- Added daemon singleton, adaptive polling, migration, scheduler-without-redraw, HUD mode, and control-plane regression tests.
+
 # v0.4.10
 
 - Fixed `skills/setup/SKILL.md` YAML frontmatter so AGY can discover the setup skill. The colon-containing description is now quoted.

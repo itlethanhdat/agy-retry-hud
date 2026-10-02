@@ -33,3 +33,12 @@ test('agy-retryctl retry scheduler reports countdown, reason, attempt and schedu
  const cli=path.resolve('src/retryctl.js'),env={...process.env,TMUX_PANE:'%7',AGY_RETRY_STATE_DIR:path.dirname(root),AGY_RETRY_HUD_CONFIG:config};let r=spawnSync(process.execPath,[cli,'retry','scheduler','--state-root',root,'--config',config,'--json'],{cwd,env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);const out=JSON.parse(r.stdout);assert.equal(out.conversationResolution,'terminal');assert.equal(out.nativeStatus,'WAIT_BACKOFF');assert.equal(out.scheduler.status,'OK');assert.equal(out.scheduler.retryLabel,'503');assert.equal(out.scheduler.attempt,1);assert.equal(out.scheduler.maxAttempts,6);assert.equal(out.scheduler.deadlineSource,'backoff');assert.equal(out.scheduler.workerAlive,true);assert.ok(out.scheduler.remainingMs>0);
  r=spawnSync(process.execPath,[cli,'retry','status','--state-root',root,'--config',config,'--json'],{cwd,env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);const status=JSON.parse(r.stdout);assert.equal(status.scheduler.status,'OK');assert.equal(status.scheduler.retryLabel,'503');
 });
+
+
+test('agy-retryctl HUD modes are local deterministic controls and hide preserves retry',()=>{
+ const base=temp('agy-hudctl-'),root=path.join(base,'state'),config=path.join(base,'config.json'),cli=path.resolve('src/retryctl.js'),env={...process.env,AGY_RETRY_SKIP_DAEMON:'1',AGY_RETRY_HUD_CONFIG:config};
+ let r=spawnSync(process.execPath,[cli,'hud','hide','--state-root',root,'--config',config,'--json'],{env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);let out=JSON.parse(r.stdout);assert.equal(out.mode,'hide');assert.equal(out.hud.visible,false);assert.equal(out.retryEnabled,true);
+ r=spawnSync(process.execPath,[cli,'hud','off','--state-root',root,'--config',config,'--json'],{env,encoding:'utf8'});out=JSON.parse(r.stdout);assert.equal(out.hud.enabled,false);assert.equal(out.retryEnabled,false);
+ r=spawnSync(process.execPath,[cli,'hud','on','--state-root',root,'--config',config,'--json'],{env,encoding:'utf8'});out=JSON.parse(r.stdout);assert.equal(out.hud.visible,true);assert.equal(out.retryEnabled,true);
+ r=spawnSync(process.execPath,[cli,'daemon','disable','--state-root',root,'--config',config,'--json'],{env,encoding:'utf8'});assert.equal(r.status,0,r.stderr);assert.equal(JSON.parse(r.stdout).enabled,false);
+});

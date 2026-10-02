@@ -1,10 +1,70 @@
-# AGY Retry HUD v0.4.10
+# AGY Retry HUD v0.5.0
 
 Native HUD + policy-controlled Auto Retry + Portable Handoff cho **Antigravity CLI (`agy`)**.
 
 `agy-retry-hud` giữ nguyên TUI gốc của AGY. Plugin dùng native status line để hiển thị context/quota/trạng thái, Stop hook để phát hiện lỗi, worker nền để retry có kiểm soát, và `agy-retryctl` + plugin skills để quản lý retry/handoff.
 
-> **Release status:** v0.4.10 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
+> **Release status:** v0.5.0 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
+
+
+## v0.5.0 — Embedded Singleton Daemon
+
+v0.5.0 chuyển scheduler từ mô hình detached worker theo incident sang **một daemon duy nhất cho mỗi user/state root**, không cần systemd/launchd/Windows Service.
+
+```text
+AGY session A ─┐
+AGY session B ─┼──> agy-retry-hud daemon (singleton)
+AGY session C ─┘          │
+                          ├─ retry scheduler
+                          ├─ quota deadline/backoff
+                          ├─ handoff worker orchestration
+                          └─ heartbeat/runtime health
+```
+
+Daemon được ensure tự động ở callback sớm nhất mà public AGY plugin API hiện có: native statusline activation, `PreInvocation`, và `Stop`. AGY hiện không công bố `SessionStart` hook riêng, nên plugin không giả lập một hook không tồn tại.
+
+Các lệnh local, không tạo model turn:
+
+```bash
+agy-retryctl daemon start
+agy-retryctl daemon stop
+agy-retryctl daemon restart
+agy-retryctl daemon status --json
+
+agy-retryctl hud on
+agy-retryctl hud hide
+agy-retryctl hud off
+agy-retryctl hud status --json
+
+agy-retryctl doctor --json
+```
+
+Semantics:
+
+| Mode | HUD | Daemon | Retry | Handoff |
+|---|---:|---:|---:|---:|
+| `hud on` | on | on | on | on |
+| `hud hide` | hidden | unchanged/on | unchanged/on | unchanged/on |
+| `hud off` | off | off | off | off |
+
+Daemon dùng adaptive scan interval: idle 10s, WAIT_QUOTA 30s, WAIT_BACKOFF 5s, gần deadline 1s, active dispatch 500ms. Heartbeat vẫn được ghi riêng theo cấu hình mặc định 5s.
+
+### Retry không phụ thuộc HUD repaint
+
+Khi AGY TUI không redraw statusline, **daemon vẫn theo dõi deadline và tự retry**. HUD countdown được tính từ local state mỗi lần AGY gọi statusline. Public plugin API hiện không cung cấp primitive an toàn để ép TUI redraw từ process nền, vì vậy text đang nhìn trên màn hình có thể đứng yên khi AGY hoàn toàn idle; điều này không đồng nghĩa scheduler dừng. Dùng:
+
+```bash
+agy-retryctl daemon status --json
+agy-retryctl retry scheduler --json
+```
+
+để kiểm tra trạng thái nền thực tế.
+
+### Migration v0.4.x
+
+Config cũ được merge với defaults v0.5. Waiting incident cũ được daemon rebind sang incident id mới để detached worker v0.4 trở thành stale trước khi daemon nhận quyền scheduler; deadline/counter hiện có được giữ lại.
+
+Xem `MIGRATION-v0.5.md`.
 
 ## Tính năng chính
 
@@ -626,3 +686,36 @@ node <installed-plugin>/setup.js repair
 ```
 
 The repair reports `installLocation`, `sharedConfigStaged`, `cliStaged`, and `skillsDiscoverable`. Current AGY releases may install global plugins under the shared `~/.gemini/config/plugins/agy-retry-hud` path; some builds/documentation also use `~/.gemini/antigravity-cli/plugins/agy-retry-hud`. v0.4.4 accepts either supported global discovery path and wires the HUD to the path AGY actually installed.
+
+---
+
+## English quick guide — v0.5.0
+
+`agy-retry-hud` keeps the native AGY TUI and adds a statusline, safe retry policy, portable handoff, and a singleton background daemon.
+
+The daemon does **not** require systemd, launchd, or a Windows Service. One daemon manages all AGY conversations for the default user state root.
+
+```bash
+# install plugin package
+node ./agy-retry-hud/setup.js install --force-statusline
+
+# daemon
+agy-retryctl daemon status --json
+agy-retryctl daemon restart
+
+# HUD modes
+agy-retryctl hud on     # HUD + daemon + retry + handoff
+agy-retryctl hud hide   # hide visual HUD, keep runtime active
+agy-retryctl hud off    # disable plugin runtime
+
+# health
+agy-retryctl doctor --json
+```
+
+Recommended source checkout locations:
+
+- Linux: `~/src/agy-retry-hud`
+- macOS: `~/Developer/agy-retry-hud`
+- Windows: `$HOME\source\repos\agy-retry-hud`
+
+The daemon can wake retry deadlines while the AGY TUI is idle. The public AGY plugin API does not expose a safe background TUI repaint primitive, so the visible statusline may remain unchanged until AGY redraws; scheduler state itself continues independently.

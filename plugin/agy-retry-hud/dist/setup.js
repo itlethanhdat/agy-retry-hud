@@ -5,6 +5,8 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {DEFAULT_CONTROL_CONFIG,controlConfigPath,loadControlConfig,saveControlConfig} from './control.js';
+import {daemonStatus,ensureDaemon} from './daemon.js';
+import {nativeRoot} from './native.js';
 
 function q(p){return '"'+String(p).replace(/"/g,'\\"')+'"';}
 function psSingleQuoted(value){return "'"+String(value).replace(/'/g,"''")+"'";}
@@ -72,7 +74,9 @@ export function installAndWire({sourceDir,home=os.homedir(),env=process.env,agy=
  const paths=setupPaths({home,env:childEnv,platform}),pluginDir=locateInstalledPlugin({home,env:childEnv,platform});
  if(!pluginDir)throw Error(`agy plugin install completed but no valid agy-retry-hud installation was found. Checked shared config: ${paths.sharedPlugin} and CLI-private path: ${paths.cliPlugin}.`);
  const setupSkill=path.join(pluginDir,'skills','setup','SKILL.md');if(!fs.existsSync(setupSkill))throw Error('installed plugin is missing skills/setup/SKILL.md; reinstall the current package');
- const hook=wireNativeHooks({pluginDir,platform}),wired=wireStatusLine({home,env:childEnv,pluginDir,force,platform}),launcher=createCtlLauncher({home,env:childEnv,platform,pluginDir});return {...wired,...launcher,hook,skillsDiscoverable:true};
+ const hook=wireNativeHooks({pluginDir,platform}),wired=wireStatusLine({home,env:childEnv,pluginDir,force,platform}),launcher=createCtlLauncher({home,env:childEnv,platform,pluginDir});
+ const cfgFile=controlConfigPath({home,env:childEnv,platform}),cfg=loadControlConfig({file:cfgFile,env:childEnv});saveControlConfig(cfg,{file:cfgFile});
+ return {...wired,...launcher,hook,skillsDiscoverable:true,configMigrated:true,daemonAutoStart:cfg.daemon?.enabled!==false&&cfg.daemon?.autoStart!==false};
 }
 function hookReady(pluginDir){
  if(!pluginDir)return false;try{const hooks=readJSON(path.join(pluginDir,'hooks.json'),{}),group=hooks?.['agy-retry-auto-retry'],stop=group?.Stop?.[0],pre=group?.PreInvocation?.[0];return stop?.type==='command'&&pre?.type==='command'&&commandReferencesPlugin(stop.command)&&commandReferencesPlugin(pre.command);}catch{return false;}
@@ -92,7 +96,7 @@ export function validateSkillFrontmatter(file){
  return {exists:true,valid:true};
 }
 export function setupDoctor({home=os.homedir(),env=process.env,platform=process.platform}={}){
- const p=setupPaths({home,env,platform}),pluginDir=locateInstalledPlugin({home,env,platform}),settings=readJSON(p.settings,{}),command=String(settings.statusLine?.command||''),skills=['retry','handoff','continue-handoff','handoff-status','retry-status','setup'];
+ const p=setupPaths({home,env,platform}),pluginDir=locateInstalledPlugin({home,env,platform}),settings=readJSON(p.settings,{}),command=String(settings.statusLine?.command||''),skills=['retry','handoff','continue-handoff','handoff-status','retry-status','setup','hud-control','daemon-control','doctor'];
  const skillHealth=Object.fromEntries(skills.map(x=>[x,pluginDir?validateSkillFrontmatter(path.join(pluginDir,'skills',x,'SKILL.md')):{exists:false,valid:false,error:'plugin missing'}]));
  const skillStatus=Object.fromEntries(skills.map(x=>[x,skillHealth[x].exists]));
  const skillFrontmatter=Object.fromEntries(skills.map(x=>[x,skillHealth[x].valid]));
@@ -102,8 +106,9 @@ export function setupDoctor({home=os.homedir(),env=process.env,platform=process.
  const globallyDiscoverable=cliStaged||sharedConfigStaged,skillsDiscoverable=skillsReady&&globallyDiscoverable;
  const installLocation=sharedConfigStaged?'shared-config':cliStaged?'cli-private':pluginDir?'custom':'missing';
  const reinstallRequired=!!pluginDir&&(!skillsReady||!schema||!fs.existsSync(path.join(pluginDir,'dist','native-entry.js'))||!fs.existsSync(path.join(pluginDir,'dist','retryctl.js')));
- const ok=!!pluginDir&&statuslineWired&&hooks&&skillsDiscoverable&&schema&&launcher&&config.valid&&nodeSupported&&!reinstallRequired;
- return {ok,pluginDir,settings:p.settings,installed:!!pluginDir,cliPluginDir:p.cliPlugin,sharedPluginDir:p.sharedPlugin,legacyPluginDir:p.legacyPlugin,installLocation,cliStaged,sharedConfigStaged,skillsDiscoverable,statuslineWired,statusLine:settings.statusLine||null,hooksReady:hooks,node:process.version,nodeSupported,skills:skillStatus,skillFrontmatter,skillsReady,handoffSchema:schema,launcher:p.launcher,launcherInstalled:launcher,config,reinstallRequired};
+ const root=nativeRoot({platform,home,env}),daemon=daemonStatus({root}),daemonExpected=config.valid?loadControlConfig({file:config.file,env}).daemon.enabled:false;
+ const ok=!!pluginDir&&statuslineWired&&hooks&&skillsDiscoverable&&schema&&launcher&&config.valid&&nodeSupported&&!reinstallRequired&&(!daemonExpected||daemon.processAlive||daemon.heartbeatAgeMs===null);
+ return {ok,pluginDir,settings:p.settings,installed:!!pluginDir,cliPluginDir:p.cliPlugin,sharedPluginDir:p.sharedPlugin,legacyPluginDir:p.legacyPlugin,installLocation,cliStaged,sharedConfigStaged,skillsDiscoverable,statuslineWired,statusLine:settings.statusLine||null,hooksReady:hooks,node:process.version,nodeSupported,skills:skillStatus,skillFrontmatter,skillsReady,handoffSchema:schema,launcher:p.launcher,launcherInstalled:launcher,config,daemon,reinstallRequired};
 }
 export function repairSetup({home=os.homedir(),env=process.env,platform=process.platform,force=false,agy='agy'}={}){
  let pluginDir=locateInstalledPlugin({home,env,platform});if(!pluginDir)throw Error('agy-retry-hud is not installed; run setup.js install from the extracted plugin package first');
@@ -117,7 +122,7 @@ export function repairSetup({home=os.homedir(),env=process.env,platform=process.
  const before=setupDoctor({home,env,platform});
  if(!before.statuslineWired){try{wireStatusLine({home,env,pluginDir,force,platform});actions.push('statusline');}catch(e){warnings.push(e?.message||String(e));}}
  const launcher=createCtlLauncher({home,env,platform,pluginDir});if(launcher.created)actions.push('agy-retryctl launcher');else if(launcher.reason)warnings.push(launcher.reason);
- const cfg=configHealth({home,env,platform});if(!cfg.exists){saveControlConfig(JSON.parse(JSON.stringify(DEFAULT_CONTROL_CONFIG)),{file:cfg.file});actions.push('default config');}else if(!cfg.valid)warnings.push(`config invalid: ${cfg.error}`);
+ const cfg=configHealth({home,env,platform});if(!cfg.exists){saveControlConfig(JSON.parse(JSON.stringify(DEFAULT_CONTROL_CONFIG)),{file:cfg.file});actions.push('default config');}else if(!cfg.valid)warnings.push(`config invalid: ${cfg.error}`);else{const merged=loadControlConfig({file:cfg.file,env});saveControlConfig(merged,{file:cfg.file});actions.push('config migration');if(merged.daemon.enabled&&merged.daemon.autoStart&&env.AGY_RETRY_SKIP_DAEMON!=='1'&&!process.env.NODE_TEST_CONTEXT){try{ensureDaemon({root:nativeRoot({platform,home,env}),config:merged,env});actions.push('daemon ensured');}catch(e){warnings.push(`daemon start failed: ${e?.message||String(e)}`);}}}
  const doctor=setupDoctor({home,env,platform});if(doctor.reinstallRequired)warnings.push('plugin assets are incomplete; reinstall the current plugin package to restore missing skills/schema/runtime files');if(!doctor.skillsDiscoverable)warnings.push('skills exist on disk but the plugin is not in a supported global discovery path (~/.gemini/config/plugins or ~/.gemini/antigravity-cli/plugins); reinstall with setup.js install or agy plugin install');
  return {actions,warnings,doctor};
 }

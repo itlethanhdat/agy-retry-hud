@@ -1,4 +1,4 @@
-# Install agy-retry-hud v0.4.2
+# Install agy-retry-hud v0.5.0
 
 ## Recommended — plugin-only archive
 
@@ -164,3 +164,33 @@ agy-retryctl retry scheduler --json
 ```
 
 Nếu HUD hiển thị `sched:LOST` hoặc `sched:STALE`, countdown vẫn có thể còn trong persistent state nhưng worker không còn được coi là healthy. Dùng output này để phân biệt timer thật với state cũ.
+
+
+## v0.5 daemon activation
+
+Không cần systemd. Sau install/repair, daemon được auto-start khi AGY kích hoạt statusline hoặc hook của plugin.
+
+Kiểm tra:
+
+```bash
+agy-retryctl daemon status --json
+agy-retryctl doctor --json
+```
+
+Ẩn giao diện nhưng vẫn giữ retry/handoff chạy nền:
+
+```bash
+agy-retryctl hud hide
+```
+
+Tắt toàn bộ runtime của plugin:
+
+```bash
+agy-retryctl hud off
+```
+
+Bật lại:
+
+```bash
+agy-retryctl hud on
+```

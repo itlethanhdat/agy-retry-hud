@@ -10,7 +10,9 @@
     "showAgentState": true,
     "showRetry": true,
     "showHandoff": true,
-    "barWidth": 10
+    "barWidth": 10,
+    "enabled": true,
+    "visible": true
   },
   "retry": {
     "enabled": true,
@@ -37,5 +39,17 @@
     "autoCreateNewSession": true,
     "semanticSummary": true,
     "mechanicalFallback": true
+  },
+  "daemon": {
+    "enabled": true,
+    "autoStart": true,
+    "heartbeatMs": 5000,
+    "idlePollMs": 10000,
+    "waitQuotaPollMs": 30000,
+    "waitBackoffPollMs": 5000,
+    "nearDeadlineMs": 60000,
+    "nearDeadlinePollMs": 1000,
+    "activePollMs": 500,
+    "maxConcurrentDispatch": 1
   }
 }

@@ -3,13 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {parseArgs} from 'node:util';
 import {nativeRoot,loadNative,loadTelemetry,terminalInstanceBinding,activeTerminalInstances,clearRetryState,retrySchedulerDiagnostics} from './native.js';
-import {loadControlConfig,saveControlConfig,controlConfigPath,setConversationOverride,getConversationOverride,effectiveControls,updateGlobal} from './control.js';
+import {loadControlConfig,saveControlConfig,controlConfigPath,setConversationOverride,getConversationOverride,effectiveControls,updateGlobal,setHudMode,setDaemonEnabled} from './control.js';
 import {createHandoff,finalizeSemanticHandoff,listHandoffs,loadHandoff,exportHandoff,importHandoff,inspectPortable,validateWorkspace,handoffSummary,markConsumed} from './handoff.js';
 import {setupDoctor,repairSetup} from './setup.js';
+import {ensureDaemon,stopDaemon,restartDaemon,daemonStatus} from './daemon.js';
 
-const HELP=`agy-retryctl v0.4.10
+const HELP=`agy-retryctl v0.5.0
   agy-retryctl setup status
   agy-retryctl setup repair [--force-statusline]
+  agy-retryctl doctor [--json]
+  agy-retryctl daemon start|stop|restart|status|enable|disable
+  agy-retryctl hud on|off|hide|status
   agy-retryctl retry on|off|status
   agy-retryctl retry scheduler [--conversation ID] [--json]
   agy-retryctl retry clear [--conversation ID]
@@ -40,11 +44,26 @@ function asBool(s){if(s==='on')return true;if(s==='off')return false;err('expect
 function output(v,json){process.stdout.write(json?JSON.stringify(v,null,2)+'\n':typeof v==='string'?v+'\n':JSON.stringify(v,null,2)+'\n');}
 async function main(argv=process.argv.slice(2)){
  const {values:v,positionals:p}=parseArgs({args:argv,allowPositionals:true,options:{cwd:{type:'string'},conversation:{type:'string'},'state-root':{type:'string'},config:{type:'string'},portable:{type:'boolean'},'include-untracked':{type:'string',multiple:true},json:{type:'boolean'},output:{type:'string'},file:{type:'string'},'force-statusline':{type:'boolean'},help:{type:'boolean'}}});
- if(v.help||!p.length){process.stdout.write(HELP);return 0;}const cwd=path.resolve(v.cwd||process.cwd()),root=path.resolve(v['state-root']||nativeRoot()),cfgFile=v.config?path.resolve(v.config):controlConfigPath();const [group,action,arg1,...rest]=p;
+ if(v.help||!p.length){process.stdout.write(HELP);return 0;}const cwd=path.resolve(v.cwd||process.cwd()),skipDaemon=process.env.AGY_RETRY_SKIP_DAEMON==='1',root=path.resolve(v['state-root']||nativeRoot()),cfgFile=v.config?path.resolve(v.config):controlConfigPath();const [group,action,arg1,...rest]=p;
  if(group==='setup'){
   if(action==='status'||action==='doctor'){const out=setupDoctor();output(out,v.json);return out.ok?0:4;}
   if(action==='repair'){const out=repairSetup({force:Boolean(v['force-statusline'])});output(out,v.json);return out.doctor.ok?0:4;}
   err('usage: setup status | setup repair [--force-statusline]');
+ }
+ if(group==='doctor'){
+  const setup=setupDoctor(),daemon=daemonStatus({root}),config=loadControlConfig({file:cfgFile}),out={ok:setup.ok&&(!config.daemon.enabled||daemon.running),setup,daemon,config:{hud:config.hud,daemon:config.daemon,retry:{enabled:config.retry.enabled},handoff:{enabled:config.handoff.enabled}}};output(out,v.json);return out.ok?0:4;
+ }
+ if(group==='daemon'){
+  if(action==='status'){const out=daemonStatus({root});output(out,v.json);return out.running?0:4;}
+  if(action==='start'){const config=loadControlConfig({file:cfgFile});config.daemon.enabled=true;config.daemon.autoStart=true;saveControlConfig(config,{file:cfgFile});const out=skipDaemon?{started:false,reason:'daemon start skipped by environment'}:ensureDaemon({root,config});output(out,v.json);return 0;}
+  if(action==='stop'){const out=await stopDaemon({root});output(out,v.json);return out.stopped?0:4;}
+  if(action==='restart'){const config=loadControlConfig({file:cfgFile});const out=await restartDaemon({root,config});output(out,v.json);return 0;}
+  if(action==='enable'||action==='disable'){const enabled=action==='enable';const config=setDaemonEnabled(enabled,{file:cfgFile,autoStart:enabled});let daemon=null;if(enabled)daemon=skipDaemon?{started:false,reason:'daemon start skipped by environment'}:ensureDaemon({root,config});else daemon=await stopDaemon({root});output({enabled,daemon},v.json);return 0;}
+  err('usage: daemon start|stop|restart|status|enable|disable');
+ }
+ if(group==='hud'){
+  if(action==='status'){const config=loadControlConfig({file:cfgFile});output({enabled:config.hud.enabled,visible:config.hud.visible,mode:!config.hud.enabled?'off':config.hud.visible?'on':'hide',daemon:daemonStatus({root}),retryEnabled:config.retry.enabled,handoffEnabled:config.handoff.enabled},v.json);return 0;}
+  if(!['on','off','hide'].includes(action))err('usage: hud on|off|hide|status');const config=setHudMode(action,{file:cfgFile});let daemon=null;if(action==='off')daemon=await stopDaemon({root});else if(config.daemon.enabled&&config.daemon.autoStart)daemon=skipDaemon?{started:false,reason:'daemon start skipped by environment'}:ensureDaemon({root,config});output({mode:action,hud:config.hud,daemon:config.daemon,retryEnabled:config.retry.enabled,handoffEnabled:config.handoff.enabled,daemonStatus:daemon},v.json);return 0;
  }
  if(group==='retry'){
   if(action==='on'||action==='off'){const c=updateGlobal('retry',asBool(action),{file:cfgFile});output({retry:c.retry.enabled},v.json);return 0;}

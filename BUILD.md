@@ -117,30 +117,30 @@ npm run verify:live
 
 You can package both the **plugin-only archive** (recommended for end users) and the **full repository archive**.
 
-#### A. Plugin-Only Archive (`agy-retry-hud-plugin-v0.4.10.zip`)
+#### A. Plugin-Only Archive (`agy-retry-hud-plugin-v0.5.0.zip`)
 
 On Linux/macOS:
 ```bash
 cd plugin
-zip -r ../agy-retry-hud-plugin-v0.4.10.zip agy-retry-hud/
+zip -r ../agy-retry-hud-plugin-v0.5.0.zip agy-retry-hud/
 cd ..
 ```
 
 On Windows (PowerShell):
 ```powershell
-Compress-Archive -Path plugin\agy-retry-hud -DestinationPath agy-retry-hud-plugin-v0.4.10.zip -Force
+Compress-Archive -Path plugin\agy-retry-hud -DestinationPath agy-retry-hud-plugin-v0.5.0.zip -Force
 ```
 
-#### B. Full Source Archive (`agy-retry-hud-v0.4.10.zip`)
+#### B. Full Source Archive (`agy-retry-hud-v0.5.0.zip`)
 
 On Linux/macOS:
 ```bash
-git archive --format=zip --prefix=agy-retry-hud-v0.4.10/ -o agy-retry-hud-v0.4.10.zip HEAD
+git archive --format=zip --prefix=agy-retry-hud-v0.5.0/ -o agy-retry-hud-v0.5.0.zip HEAD
 ```
 
 On Windows (PowerShell):
 ```powershell
-git archive --format=zip --prefix=agy-retry-hud-v0.4.10/ -o agy-retry-hud-v0.4.10.zip HEAD
+git archive --format=zip --prefix=agy-retry-hud-v0.5.0/ -o agy-retry-hud-v0.5.0.zip HEAD
 ```
 
 ---
@@ -245,22 +245,22 @@ npm test
 
 ### 4. Đóng gói bản Release (ZIP)
 
-#### A. Gói Plugin cho người dùng (`agy-retry-hud-plugin-v0.4.10.zip`)
+#### A. Gói Plugin cho người dùng (`agy-retry-hud-plugin-v0.5.0.zip`)
 
 Trên Windows (PowerShell):
 ```powershell
-Compress-Archive -Path plugin\agy-retry-hud -DestinationPath agy-retry-hud-plugin-v0.4.10.zip -Force
+Compress-Archive -Path plugin\agy-retry-hud -DestinationPath agy-retry-hud-plugin-v0.5.0.zip -Force
 ```
 
 Trên Linux / macOS:
 ```bash
-cd plugin && zip -r ../agy-retry-hud-plugin-v0.4.10.zip agy-retry-hud/ && cd ..
+cd plugin && zip -r ../agy-retry-hud-plugin-v0.5.0.zip agy-retry-hud/ && cd ..
 ```
 
-#### B. Gói toàn bộ mã nguồn (`agy-retry-hud-v0.4.10.zip`)
+#### B. Gói toàn bộ mã nguồn (`agy-retry-hud-v0.5.0.zip`)
 
 ```bash
-git archive --format=zip --prefix=agy-retry-hud-v0.4.10/ -o agy-retry-hud-v0.4.10.zip HEAD
+git archive --format=zip --prefix=agy-retry-hud-v0.5.0/ -o agy-retry-hud-v0.5.0.zip HEAD
 ```
 
 ---

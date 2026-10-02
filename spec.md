@@ -1541,3 +1541,19 @@ Scheduler state persists the exact incident id, worker PID, worker start, heartb
 Supported deadline source labels: `server`, `telemetry-5h`, `fallback`, `server-delay`, `backoff`. Retry reason labels are sanitized categories/codes and must not persist arbitrary full error text merely for HUD rendering.
 
 `agy-retryctl retry scheduler` is a deterministic, local-only diagnostic and must never generate a model turn.
+
+
+# 44. v0.5 Embedded Daemon Runtime
+
+1. Default deployment uses one singleton daemon per user/default state root; never one daemon per AGY conversation.
+2. No system service manager is required.
+3. Daemon is ensured from plugin activation surfaces available in AGY: statusline, PreInvocation and Stop. No undocumented SessionStart hook is assumed.
+4. Retry scheduling and deadline wake-up must continue when the AGY TUI is not redrawing.
+5. Native TUI visual repaint is not forced from the background process; public plugin APIs do not expose a safe redraw primitive.
+6. Adaptive scans: idle 10s; WAIT_QUOTA 30s; WAIT_BACKOFF 5s; deadline <=60s 1s; active 500ms. Heartbeat default 5s.
+7. `maxConcurrentDispatch` defaults to 1 across all managed conversations.
+8. Daemon state exposes PID, heartbeat, session counts, waiting counts, task counts and process memory.
+9. HUD modes: ON enables runtime; HIDE suppresses rendering while runtime remains active; OFF disables HUD, daemon, retry and handoff.
+10. Migration from v0.4 keeps deadlines/counters and rebinds waiting incident id before daemon ownership so legacy detached workers cannot dispatch the new incident.
+11. Handoff PREPARING/PENDING/ROLLOVER_ARMED work may be completed by the singleton daemon.
+12. Daemon crash/restart must rehydrate durable WAIT_QUOTA/WAIT_BACKOFF state from disk.

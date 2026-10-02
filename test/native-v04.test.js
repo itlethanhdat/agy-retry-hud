@@ -40,3 +40,9 @@ test('compact HUD defaults to two lines and keeps ctx plus 5h/week quotas in one
  const text=renderNativeStatusline(p,{effectiveRetry:true,effectiveHandoff:false},1000,{color:false,bar_width:10},{retryEnabled:true,retryOverride:'inherit',handoffEnabled:false});
  const lines=text.split('\n');assert.equal(lines.length,2);assert.match(lines[0],/retry:ON/);assert.match(lines[0],/handoff:OFF/);assert.match(lines[1],/ctx .*4%/);assert.match(lines[1],/5h .*99% .*↻ 1h00m/);assert.match(lines[1],/week .*6% .*↻ 1d1h/);
 });
+
+test('HUD hide/off mode renders an empty statusline while retry state remains untouched',()=>{
+ const cwd='/tmp/project',p=payload(cwd,{terminal_width:120,context_window:{used_percentage:33,context_window_size:1_000_000}}),state={effectiveRetry:true,effectiveHandoff:true,status:'IDLE',snapshot:{agentState:'idle'}};
+ assert.equal(renderNativeStatusline(p,state,1000,{color:false,visible:false}), '');
+ assert.equal(renderNativeStatusline(p,state,1000,{color:false,enabled:false}), '');
+});

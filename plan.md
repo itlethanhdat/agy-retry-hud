@@ -999,3 +999,14 @@ This plan is ready for execution.
 - [x] Embed scheduler diagnostics in `retry status --json`.
 - [x] Preserve weekly/multi-CLI/manual-supersede safety gates.
 - [x] Full regression: 113/113 PASS.
+
+
+# v0.5.0 execution completion
+
+- [x] Phase 1: singleton embedded daemon, PID/heartbeat, crash-safe status, no systemd.
+- [x] Phase 2: daemon-owned retry scheduler, durable wait rehydration, shared dispatch semaphore.
+- [x] Phase 3: HUD hide/off controls; existing countdown/type/attempt/scheduler health preserved.
+- [x] Phase 4: `agy-retryctl daemon`, `hud`, and `doctor` commands.
+- [x] Phase 5: `hud-control`, `daemon-control`, `doctor` skills.
+- [x] Phase 6: v0.4 config/state migration and daemon adoption; existing portable auto-handoff retained.
+- [x] Phase 7: regression + plugin package verification + extracted-artifact retest.

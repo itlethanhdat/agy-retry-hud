@@ -208,11 +208,11 @@ function handoffDisplay(state,color,controls){
  const label=labels[st]||st;const code=['BLOCKED','WORKSPACE_MISMATCH'].includes(st)?'91':['READY','ROLLOVER_ARMED'].includes(st)?'92':['PREPARING','PENDING','ROLLOVER'].includes(st)?'93':'90';
  return ansi(code,`handoff:${label}`,color);
 }
-export function defaultHudConfig(){return {color:true,compact:true,multiline:true,show_progress_bar:true,show_plan:true,show_branch:true,show_cwd:true,show_tokens:false,show_agent_state:true,show_retry:true,show_handoff:true,bar_width:10};}
+export function defaultHudConfig(){return {enabled:true,visible:true,color:true,compact:true,multiline:true,show_progress_bar:true,show_plan:true,show_branch:true,show_cwd:true,show_tokens:false,show_agent_state:true,show_retry:true,show_handoff:true,bar_width:10};}
 export function loadHudConfig({env=process.env,home=os.homedir(),platform=process.platform}={}){
  let control;try{control=loadControlConfig({file:env.AGY_RETRY_HUD_CONFIG||undefined,env});}catch{control=null;}
  const base=defaultHudConfig(),h=control?.hud||{};
- const map={color:'color',compact:'compact',multiline:'multiline',showProgressBar:'show_progress_bar',showPlan:'show_plan',showBranch:'show_branch',showCwd:'show_cwd',showTokens:'show_tokens',showAgentState:'show_agent_state',showRetry:'show_retry',showHandoff:'show_handoff',barWidth:'bar_width'};
+ const map={enabled:'enabled',visible:'visible',color:'color',compact:'compact',multiline:'multiline',showProgressBar:'show_progress_bar',showPlan:'show_plan',showBranch:'show_branch',showCwd:'show_cwd',showTokens:'show_tokens',showAgentState:'show_agent_state',showRetry:'show_retry',showHandoff:'show_handoff',barWidth:'bar_width'};
  for(const [a,b] of Object.entries(map))if(a in h)base[b]=h[a];
  if(env.NO_COLOR!==undefined||env.TERM==='dumb')base.color=false;base.bar_width=Math.max(6,Math.min(16,Number(base.bar_width)||10));return base;
 }
@@ -241,7 +241,7 @@ function compactMetric(label,bar,value,detail,color,{labelWidth=4,valueWidth=4}=
  const cells=[padVisible(ansi('90',label,color),labelWidth)];if(bar)cells.push(bar);cells.push(padVisible(value,valueWidth,'right'));if(detail)cells.push(detail);return cells.join(' ');
 }
 export function renderNativeStatusline(payload,state,now=Date.now(),config=defaultHudConfig(),controls){
- const cfg={...defaultHudConfig(),...config},color=cfg.color!==false&&process.env.NO_COLOR===undefined,width=Math.max(40,Number(payload?.terminal_width)||100),maxWidth=Math.max(36,width-4),contentWidth=Math.max(30,maxWidth-3);
+ const cfg={...defaultHudConfig(),...config};if(cfg.enabled===false||cfg.visible===false)return '';const color=cfg.color!==false&&process.env.NO_COLOR===undefined,width=Math.max(40,Number(payload?.terminal_width)||100),maxWidth=Math.max(36,width-4),contentWidth=Math.max(30,maxWidth-3);
  const rawModel=sanitize(payload?.model?.display_name||payload?.model?.id||state?.model||'model?'),model=clipVisible(rawModel,34);
  const pct=Number.isFinite(payload?.context_window?.used_percentage)?payload.context_window.used_percentage:state?.snapshot?.contextPercent,ctxPct=Number.isFinite(pct)?Math.max(0,Math.min(100,pct)):null;
  const ctxSize=payload?.context_window?.context_window_size,ctxUsed=Number.isFinite(ctxPct)&&Number.isFinite(ctxSize)?ctxSize*ctxPct/100:null,usage=payload?.context_window?.current_usage||{};
@@ -421,7 +421,7 @@ async function waitUntil(root,id,at,{now=Date.now,sleep=(ms)=>new Promise(r=>set
 }
 
 async function oneTurn(state,{adapter=startSession,message=state.message||DEFAULT_RESUME_MESSAGE,conversation=state.conversationId,env={AGY_RETRY_NATIVE_WORKER:'1'},beforeSend}={}){
- const session=adapter({executable:state.config?.executable||'agy',prefixArgs:state.config?.prefixArgs||[],cwd:state.cwd||process.cwd(),conversation,model:state.model||undefined,watchdogMs:state.config?.watchdogMs||defaults.watchdogMs,env});
+ const session=await adapter({executable:state.config?.executable||'agy',prefixArgs:state.config?.prefixArgs||[],cwd:state.cwd||process.cwd(),conversation,model:state.model||undefined,watchdogMs:state.config?.watchdogMs||defaults.watchdogMs,env});
  let init=false,result=null,protocol='',newConversation='';
  try{
   for await(const e of session.events()){
@@ -443,7 +443,7 @@ async function refreshWeeklyIfNeeded(root,s,now,quotaProviderFactory){
  // immediately if an exhausted weekly bucket is known.
  if(!['quota','long-quota'].includes(s.retryKind))return gate;
  const group=providerForModel(s.model)||'gemini',provider=quotaProviderFactory?quotaProviderFactory(s):new QuotaProvider({dir:path.join(root,'quota'),executable:s.config?.executable||'agy',prefixArgs:s.config?.prefixArgs||[],cwd:s.cwd});
- try{const snap=await provider.refresh({group,profile:'native'});s.snapshot={...(s.snapshot||{}),observedAt:snap.observedAt,quota:snap.buckets};saveNative(root,s);return weeklyGate(s,now,ctl.retry);}catch{return {status:'unknown'};}
+ try{const snap=await provider.refresh({group,profile:'native'});s.snapshot={...(s.snapshot||{}),observedAt:snap.observedAt,quota:snap.buckets};s.quotaRefresh={observedAt:snap.observedAt,source:snap.source||'usage',buckets:snap.buckets};saveNative(root,s);return weeklyGate(s,now,ctl.retry);}catch{return {status:'unknown'};}
 }
 function handoffReadyForRollover(s){
  return Boolean(s?.handoff?.id&&['READY','ROLLOVER_ARMED'].includes(s.handoff.status)&&s.handoff.rolloverArmed);
