@@ -1,11 +1,30 @@
-# AGY Retry HUD v0.5.0
+# AGY Retry HUD v0.5.1
 
 Native HUD + policy-controlled Auto Retry + Portable Handoff cho **Antigravity CLI (`agy`)**.
 
 `agy-retry-hud` giữ nguyên TUI gốc của AGY. Plugin dùng native status line để hiển thị context/quota/trạng thái, Stop hook để phát hiện lỗi, worker nền để retry có kiểm soát, và `agy-retryctl` + plugin skills để quản lý retry/handoff.
 
-> **Release status:** v0.5.0 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
+> **Release status:** v0.5.1 implementation complete / offline-verified. Windows status-line command wiring was hardened after a live AGY 1.2.14 quoting failure on native Windows. Target runtime là Node.js 24.x và known target AGY là 1.2.14. Live authenticated AGY, macOS và Windows vẫn là release-evidence gates nếu chưa chạy trên máy tương ứng; project không coi synthetic tests là live verification.
 
+
+
+## v0.5.1 statusline fast-path hardening
+
+AGY 1.2.14 can kill a custom statusline process if it does too much work or fails to terminate promptly. v0.5.1 keeps the render callback intentionally small:
+
+```text
+read AGY payload
+→ lightweight daemon ensure
+→ fast ephemeral telemetry update (no fsync)
+→ read local retry/control state
+→ render
+→ flush stdout
+→ exit
+```
+
+Automatic handoff scheduling is no longer performed by the statusline process. The singleton daemon consumes telemetry and owns that scheduling. Durable retry/handoff state still uses atomic fsync-backed writes where correctness matters.
+
+If AGY logs `statusline: command failed: signal: killed`, upgrade to v0.5.1 and run `agy-retryctl doctor --json`.
 
 ## v0.5.0 — Embedded Singleton Daemon
 

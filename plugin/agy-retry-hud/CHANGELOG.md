@@ -1,3 +1,15 @@
+# v0.5.1
+
+- Fixed intermittent AGY `statusline: command failed: signal: killed` observed under AGY 1.2.14.
+- Statusline is now a strict fast path: it no longer performs automatic handoff scheduling or durable/fsync telemetry writes.
+- Statusline telemetry is persisted as ephemeral temp+rename state without `fsync`; durable retry/handoff state remains owned by hooks and the singleton daemon.
+- Automatic handoff scheduling moved into the singleton daemon, which consumes statusline telemetry independently of TUI redraw lifecycle.
+- Statusline reuses the already-loaded control config instead of loading it a second time for HUD rendering.
+- After stdout flush, the one-shot statusline helper terminates explicitly so stray/inherited Node handles cannot make AGY kill the renderer.
+- Daemon auto-start remains on statusline only as a minimal lifecycle fallback because AGY 1.2.14 exposes no public SessionStart plugin hook; PreInvocation and Stop also ensure the daemon.
+- Added regression coverage for daemon-owned handoff scheduling and prompt statusline exit while daemon auto-start is enabled.
+- Full offline suite: 128 tests.
+
 # v0.5.0
 
 - Added embedded singleton daemon; no systemd/launchd/Windows Service dependency.

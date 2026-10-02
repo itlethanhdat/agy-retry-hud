@@ -47,3 +47,11 @@ The existing suite retains synthetic Windows quoting/path tests and portable Lin
 ## Known native-TUI limitation
 
 The daemon owns retry deadlines independently of AGY redraws. Public AGY plugin hooks do not expose a safe background TUI repaint primitive, so a visible statusline can remain visually stale while the TUI is completely idle; scheduler/daemon health remains queryable via `agy-retryctl` and automatic retry does not require a HUD repaint.
+
+
+## v0.5.1 statusline regression
+
+- Fast telemetry path avoids fsync on statusline redraw.
+- Handoff scheduling is daemon-owned.
+- Statusline exits promptly even when daemon auto-start is exercised.
+- Full suite: 128/128 PASS.

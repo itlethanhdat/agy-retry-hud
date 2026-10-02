@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {nativeRoot,mergeStatusline,renderNativeStatusline,loadHudConfig,loadNative,saveNative,scheduleFromStop,scheduleFromPreInvocation,runNativeWorker,spawnDetachedWorker,scheduleAutoHandoff,runHandoffWorker,spawnDetachedHandoffWorker} from './native.js';
+import {nativeRoot,mergeStatusline,renderNativeStatusline,loadHudConfig,loadNative,saveNative,scheduleFromStop,scheduleFromPreInvocation,runNativeWorker,spawnDetachedWorker,runHandoffWorker,spawnDetachedHandoffWorker} from './native.js';
 import {effectiveControls,loadControlConfig} from './control.js';
 import {ensureDaemon} from './daemon.js';
 
@@ -23,10 +23,18 @@ function arg(name){const i=process.argv.indexOf(name);return i>=0?process.argv[i
 const cmd=process.argv[2];const defaultRoot=path.resolve(nativeRoot()),root=path.resolve(arg('--state-root')||defaultRoot);const daemonAutoAllowed=root===defaultRoot||process.env.AGY_RETRY_DAEMON_AUTOSTART_TEST==='1';
 try{
  if(cmd==='statusline'){
-  const payload=await readStdin({timeoutMs:Number(process.env.AGY_RETRY_STATUSLINE_STDIN_TIMEOUT_MS||1000)}),cfg=loadControlConfig();if(daemonAutoAllowed&&cfg.daemon?.enabled!==false&&cfg.daemon?.autoStart!==false)try{ensureDaemon({root,config:cfg});}catch{}
-  const state=mergeStatusline(root,payload),id=payload?.conversation_id||payload?.session_id;let controls={config:cfg,retryOverride:'inherit',handoffOverride:'inherit',retryEnabled:cfg.retry.enabled,handoffEnabled:cfg.handoff.enabled};
-  if(id&&state){controls=effectiveControls(root,id,{config:cfg});const daemonOn=cfg.daemon?.enabled!==false; scheduleAutoHandoff(root,payload,{controlConfig:cfg,spawnWorker:daemonOn?undefined:(conversation)=>spawnDetachedHandoffWorker(fileURLToPath(import.meta.url),conversation,root)});}
-  process.stdout.write(renderNativeStatusline(payload,state,Date.now(),loadHudConfig(),controls)+'\n');
+  const payload=await readStdin({timeoutMs:Number(process.env.AGY_RETRY_STATUSLINE_STDIN_TIMEOUT_MS||1000)}),cfg=loadControlConfig();
+  // Keep the AGY statusline path intentionally small. Daemon startup is the only
+  // lifecycle action retained here because AGY exposes no SessionStart hook.
+  // Handoff scheduling and durable retry work belong to the singleton daemon.
+  if(daemonAutoAllowed&&cfg.daemon?.enabled!==false&&cfg.daemon?.autoStart!==false)try{ensureDaemon({root,config:cfg});}catch{}
+  const state=mergeStatusline(root,payload,Date.now(),{persist:'fast'}),id=payload?.conversation_id||payload?.session_id;let controls={config:cfg,retryOverride:'inherit',handoffOverride:'inherit',retryEnabled:cfg.retry.enabled,handoffEnabled:cfg.handoff.enabled};
+  if(id&&state)controls=effectiveControls(root,id,{config:cfg});
+  const line=renderNativeStatusline(payload,state,Date.now(),loadHudConfig({controlConfig:cfg}),controls)+'\n';
+  await new Promise(resolve=>process.stdout.write(line,resolve));
+  // native-entry statusline is a one-shot helper. Force termination after stdout
+  // flush so an inherited/stray Node handle can never make AGY's runner kill it.
+  process.exit(0);
  }else if(cmd==='stop-hook'){
   const payload=await readStdin({timeoutMs:5000}),script=fileURLToPath(import.meta.url),cfg=loadControlConfig();let daemonOn=false;if(daemonAutoAllowed&&cfg.daemon?.enabled!==false){try{ensureDaemon({root,config:cfg});daemonOn=true;}catch{}}
   const r=scheduleFromStop(root,payload,{controlConfig:cfg,spawnWorker:daemonOn?undefined:(id,incidentId)=>spawnDetachedWorker(script,id,root,incidentId)});process.stdout.write(JSON.stringify({decision:'stop'})+'\n');if(process.env.AGY_RETRY_DEBUG==='1')process.stderr.write(JSON.stringify({scheduled:r.scheduled,reason:r.reason})+'\n');

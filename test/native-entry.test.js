@@ -33,3 +33,12 @@ test('statusline parses a complete JSON payload without waiting for stdin EOF',a
  const code=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error('statusline waited for EOF'));},1500);child.once('exit',c=>{clearTimeout(timer);resolve(c);});child.once('error',reject);});
  assert.equal(code,0,stderr);assert.match(stdout,/Gemini Test/);assert.match(stdout,/ctx .*12%/);assert.equal(stderr,'');
 });
+
+
+test('statusline exits promptly even when it auto-starts the embedded daemon',async()=>{
+ const root=temp(),workspace=temp(),entry=path.resolve('plugin/agy-retry-hud/dist/native-entry.js');
+ const body={conversation_id:conv,cwd:workspace,workspace:{current_dir:workspace},model:{id:'gemini-test',display_name:'Gemini Test'},context_window:{used_percentage:22},quota:{},agent_state:'idle',terminal_width:100};
+ const child=spawn(process.execPath,[entry,'statusline','--state-root',root],{stdio:['pipe','pipe','pipe'],env:{...process.env,AGY_RETRY_STATE_DIR:root,AGY_RETRY_DAEMON_AUTOSTART_TEST:'1',NO_COLOR:'1'}});let stdout='',stderr='';child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');child.stdout.on('data',x=>stdout+=x);child.stderr.on('data',x=>stderr+=x);child.stdin.write(JSON.stringify(body));
+ const code=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error('statusline did not terminate promptly'));},1500);child.once('exit',c=>{clearTimeout(timer);resolve(c);});child.once('error',reject);});assert.equal(code,0,stderr);assert.match(stdout,/Gemini Test/);
+ const daemon=await import('../src/daemon.js');await daemon.stopDaemon({root});
+});

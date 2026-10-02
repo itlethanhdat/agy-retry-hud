@@ -33,6 +33,10 @@ function telemetryFile(root,id){if(!validConversation(id))throw Error('invalid c
 export function loadNative(root,id){try{const s=JSON.parse(fs.readFileSync(nativeFile(root,id),'utf8'));if(s?.schemaVersion!==1||s.conversationId!==id)throw Error('invalid native state');return s;}catch(e){if(e.code==='ENOENT')return null;throw e;}}
 export function loadTelemetry(root,id){try{const s=JSON.parse(fs.readFileSync(telemetryFile(root,id),'utf8'));if(s?.schemaVersion!==1||s.conversationId!==id)throw Error('invalid telemetry state');return s;}catch(e){if(e.code==='ENOENT')return null;throw e;}}
 export function saveNative(root,state){if(state?.schemaVersion!==1||!validConversation(state.conversationId))throw Error('invalid native state');state.updatedAt=Date.now();atomicJSON(nativeFile(root,state.conversationId),state);return state;}
+function fastEphemeralJSON(file,value){
+ const dir=path.dirname(file);fs.mkdirSync(dir,{recursive:true,mode:0o700});const tmp=`${file}.${process.pid}.${Date.now()}.tmp`;
+ try{fs.writeFileSync(tmp,JSON.stringify(value),'utf8');fs.renameSync(tmp,file);}finally{try{fs.unlinkSync(tmp);}catch{}}
+}
 
 export function terminalInstanceBinding(env=process.env){
  const candidates=[['tmux',env.TMUX_PANE],['windows-terminal',env.WT_SESSION],['wezterm',env.WEZTERM_PANE],['kitty',env.KITTY_WINDOW_ID],['terminal-session',env.TERM_SESSION_ID],['gnome-terminal',env.GNOME_TERMINAL_SCREEN],['konsole',env.KONSOLE_DBUS_SESSION]];
@@ -69,7 +73,7 @@ export function snapshotFromStatusline(payload,now=Date.now()){
  const cwd=payload?.workspace?.current_dir||payload?.cwd||'';
  return {schemaVersion:1,conversationId:id,cwd:typeof cwd==='string'?cwd:'',model:typeof payload?.model?.id==='string'?payload.model.id:'',status:'IDLE',phase:'native',createdAt:now,updatedAt:now,startedAt:now,transientRetries:0,quotaRetries:0,nextRetryAt:null,retryKind:'',retryLabel:'',reason:'',message:DEFAULT_RESUME_MESSAGE,retryIncident:null,scheduler:null,handoff:null,snapshot:{observedAt:now,agentState:payload?.agent_state||'unknown',contextPercent:pct,quota:quotaFromStatus(payload,now),toolConfirmationPending:payload?.tool_confirmation_pending===true,pendingInputCount:Number.isFinite(payload?.pending_input_count)?payload.pending_input_count:0,taskCount:Number.isFinite(payload?.task_count)?payload.task_count:0,artifactCount:Number.isFinite(payload?.artifact_count)?payload.artifact_count:0,terminalWidth:Number.isFinite(payload?.terminal_width)?payload.terminal_width:null}};
 }
-export function mergeStatusline(root,payload,now=Date.now(),{env=process.env}={}){
+export function mergeStatusline(root,payload,now=Date.now(),{env=process.env,persist='durable'}={}){
  const id=payload?.conversation_id||payload?.session_id;
  // AGY can invoke the status-line while the TUI is still bootstrapping, before a
  // conversation/session id exists. Render the HUD from the ephemeral payload but
@@ -77,7 +81,7 @@ export function mergeStatusline(root,payload,now=Date.now(),{env=process.env}={}
  if(!validConversation(id))return null;
  const snap=snapshotFromStatusline(payload,now);const previous=loadTelemetry(root,snap.conversationId),binding=terminalInstanceBinding(env);const instances=mergeTerminalInstances(previous,binding,now,snap.cwd);const telemetry={schemaVersion:1,conversationId:snap.conversationId,cwd:snap.cwd,model:snap.model,snapshot:snap.snapshot,instances,terminalBinding:binding||previous?.terminalBinding||'',updatedAt:now};
  const stable=x=>JSON.stringify({schemaVersion:x?.schemaVersion,conversationId:x?.conversationId,cwd:x?.cwd,model:x?.model,snapshot:x?.snapshot?{...x.snapshot,observedAt:0}:null,instanceKeys:Object.keys(x?.instances||{}).sort()});
- if(!previous||stable(previous)!==stable(telemetry)||now-(previous.updatedAt||0)>=5000)atomicJSON(telemetryFile(root,snap.conversationId),telemetry);
+ if(!previous||stable(previous)!==stable(telemetry)||now-(previous.updatedAt||0)>=5000){const file=telemetryFile(root,snap.conversationId);if(persist==='fast')fastEphemeralJSON(file,telemetry);else if(persist!==false)atomicJSON(file,telemetry);}
  const retry=loadNative(root,snap.conversationId);
  // v0.4.5 could persist PAUSED_UNCERTAIN when a Stop hook fired while AGY still
  // had background work. That state has no retry incident/timer and is safe to
@@ -209,8 +213,8 @@ function handoffDisplay(state,color,controls){
  return ansi(code,`handoff:${label}`,color);
 }
 export function defaultHudConfig(){return {enabled:true,visible:true,color:true,compact:true,multiline:true,show_progress_bar:true,show_plan:true,show_branch:true,show_cwd:true,show_tokens:false,show_agent_state:true,show_retry:true,show_handoff:true,bar_width:10};}
-export function loadHudConfig({env=process.env,home=os.homedir(),platform=process.platform}={}){
- let control;try{control=loadControlConfig({file:env.AGY_RETRY_HUD_CONFIG||undefined,env});}catch{control=null;}
+export function loadHudConfig({env=process.env,home=os.homedir(),platform=process.platform,controlConfig=null}={}){
+ let control=controlConfig;try{if(!control)control=loadControlConfig({file:env.AGY_RETRY_HUD_CONFIG||undefined,env});}catch{control=null;}
  const base=defaultHudConfig(),h=control?.hud||{};
  const map={enabled:'enabled',visible:'visible',color:'color',compact:'compact',multiline:'multiline',showProgressBar:'show_progress_bar',showPlan:'show_plan',showBranch:'show_branch',showCwd:'show_cwd',showTokens:'show_tokens',showAgentState:'show_agent_state',showRetry:'show_retry',showHandoff:'show_handoff',barWidth:'bar_width'};
  for(const [a,b] of Object.entries(map))if(a in h)base[b]=h[a];

@@ -30,3 +30,8 @@ agy-retryctl doctor --json
 ```
 
 No systemd/launchd/Windows Service setup is required.
+
+
+## v0.5.1
+
+No state migration is required from v0.5.0. Reinstall/repair the plugin so `dist/native-entry.js`, `dist/native.js`, and `dist/daemon.js` are replaced.
