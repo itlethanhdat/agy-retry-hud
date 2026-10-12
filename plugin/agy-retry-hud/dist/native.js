@@ -172,6 +172,14 @@ function progressBar(value,width=10,{kind='quota',color=true}={}){
  const pct=Math.max(0,Math.min(100,Number(value)||0)),filled=Math.max(0,Math.min(width,Math.round(pct/100*width)));
  const raw='█'.repeat(filled)+'░'.repeat(width-filled);return ansi(metricColorCode(kind,pct),raw,color);
 }
+function tokenBits(usage={}){
+ const bits=[];
+ if(Number.isFinite(usage.input_tokens))bits.push(`in:${humanTokens(usage.input_tokens)}`);
+ if(Number.isFinite(usage.output_tokens))bits.push(`out:${humanTokens(usage.output_tokens)}`);
+ const cache=(usage.cache_read_input_tokens||0)+(usage.cache_creation_input_tokens||0);
+ if(cache)bits.push(`cache:${humanTokens(cache)}`);
+ return bits;
+}
 export function providerForModel(model=''){
  const m=String(model).toLowerCase();if(m.includes('gemini'))return 'gemini';if(m.includes('claude')||m.includes('anthropic'))return 'claude';if(m.includes('gpt')||m.includes('openai'))return 'openai';return '';
 }
@@ -215,7 +223,7 @@ function handoffDisplay(state,color,controls){
  const label=labels[st]||st;const code=['BLOCKED','WORKSPACE_MISMATCH'].includes(st)?'91':['READY','ROLLOVER_ARMED'].includes(st)?'92':['PREPARING','PENDING','ROLLOVER'].includes(st)?'93':'90';
  return ansi(code,`handoff:${label}`,color);
 }
-export function defaultHudConfig(){return {enabled:true,visible:true,color:true,compact:true,multiline:true,show_progress_bar:true,show_plan:true,show_branch:true,show_cwd:true,show_tokens:false,show_agent_state:true,show_retry:true,show_handoff:true,bar_width:10};}
+export function defaultHudConfig(){return {enabled:true,visible:true,color:true,compact:true,multiline:true,show_progress_bar:true,show_plan:true,show_branch:true,show_cwd:true,show_tokens:true,show_agent_state:true,show_retry:true,show_handoff:true,bar_width:10};}
 export function loadHudConfig({env=process.env,home=os.homedir(),platform=process.platform,controlConfig=null}={}){
  let control=controlConfig;try{if(!control)control=loadControlConfig({file:env.AGY_RETRY_HUD_CONFIG||undefined,env});}catch{control=null;}
  const base=defaultHudConfig(),h=control?.hud||{};
@@ -277,6 +285,8 @@ export function renderNativeStatusline(payload,state,now=Date.now(),config=defau
    const first=joinSegments(chunks.slice(0,Math.min(2,chunks.length)),' │ ',color);lines.push(clipVisible(first,contentWidth));
    if(chunks.length>2)lines.push(clipVisible(chunks.slice(2).join('  '),contentWidth));
   }
+  const tokBits=cfg.show_tokens?tokenBits(usage):[];
+  if(tokBits.length)lines.push(clipVisible(ansi('90','tok',color)+' '+tokBits.join(' '),contentWidth));
   if(cfg.multiline===false)lines=[joinSegments(lines,' │ ',color)];
   return lines.map((line,i)=>clipVisible(ansi('90',lines.length===1?'':i===0?'╭─ ':i===lines.length-1?'╰─ ':'├─ ',color)+line,maxWidth)).join('\n');
  }
@@ -285,7 +295,7 @@ export function renderNativeStatusline(payload,state,now=Date.now(),config=defau
  const prefixWidth=10,valueWidth=9,detailWidth=12;
  const metric=(prefix,bar,value,detail,tail='')=>{const cells=[padVisible(ansi('90',prefix,color),prefixWidth)];if(barWidth)cells.push(padVisible(bar,barWidth));cells.push(padVisible(value,valueWidth,'right'));if(detail)cells.push(padVisible(detail,detailWidth));let row=cells.join(' ');if(tail)row+='  '+tail;return clipVisible(row,contentWidth);};
  const runtime=[];if(Number.isFinite(payload?.task_count)&&payload.task_count>0)runtime.push(`tasks:${payload.task_count}`);if(Number.isFinite(payload?.artifact_count)&&payload.artifact_count>0)runtime.push(`artifacts:${payload.artifact_count}`);if(payload?.tool_confirmation_pending)runtime.push('confirm!');if(Number.isFinite(payload?.pending_input_count)&&payload.pending_input_count>0)runtime.push(`queued:${payload.pending_input_count}`);
- if(cfg.show_tokens&&maxWidth>=120){const bits=[];if(Number.isFinite(usage.input_tokens))bits.push(`in:${humanTokens(usage.input_tokens)}`);if(Number.isFinite(usage.output_tokens))bits.push(`out:${humanTokens(usage.output_tokens)}`);const cache=(usage.cache_read_input_tokens||0)+(usage.cache_creation_input_tokens||0);if(cache)bits.push(`cache:${humanTokens(cache)}`);runtime.push(...bits);}
+ if(cfg.show_tokens&&maxWidth>=120)runtime.push(...tokenBits(usage));
  const ctxTail=[retry,handoff,...runtime.map(x=>ansi('90',x,color))].filter(Boolean).join('  ');
  let lines=[identityLine,metric('ctx',ctxBar,ctxValueLong,ctxDetail,ctxTail)];
  if(five&&week){const f=quotaMetric(five,barWidth,color,now),w=quotaMetric(week,barWidth,color,now),first=metric('quota  5h',f.bar,f.valueLong,f.detail),second=[padVisible(ansi('90','week',color),5),barWidth?padVisible(w.bar,barWidth):'',padVisible(w.valueLong,valueWidth,'right'),padVisible(w.detail,detailWidth)].filter(Boolean).join('  '),combined=`${first}${sep}${second}`;if(visibleWidth(combined)<=contentWidth)lines.push(combined);else{lines.push(metric('5h',f.bar,f.valueLong,f.detail));lines.push(metric('week',w.bar,w.valueLong,w.detail));}}

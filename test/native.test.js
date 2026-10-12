@@ -140,7 +140,23 @@ test('HUD is adaptive, colored, provider-aware and never exceeds reported termin
  const selected=selectDisplayQuotas(p,now);assert.deepEqual(selected.map(x=>x.provider),['gemini','gemini']);
  const plain=renderNativeStatusline(p,null,now,{color:false,bar_width:10});assert.match(plain,/Gemini 3\.8 Flash/);assert.match(plain,/Pro/);assert.match(plain,/5h .*52%/);assert.match(plain,/week .*84%/);assert.doesNotMatch(plain,/48%/);assert.match(plain,/█/);assert.match(plain,/↻ 6d21h/);
  for(const line of plain.split('\n'))assert.ok(visibleWidth(line)<=92,`line overflow ${visibleWidth(line)}: ${line}`);
+ assert.match(plain,/tok in:63\.4k out:346 cache:20\.9k/,'compact HUD shows token and cache usage by default');
  const colored=renderNativeStatusline(p,null,now,{color:true,bar_width:10});assert.match(colored,/\x1b\[/);
+});
+
+test('compact HUD token line honors show_tokens and hides when usage data is missing',()=>{
+ const now=Date.parse('2030-01-01T00:00:00Z');
+ const withUsage=payload({terminal_width:80,context_window:{used_percentage:37,context_window_size:1048576,current_usage:{input_tokens:63382,output_tokens:346,cache_read_input_tokens:20857,cache_creation_input_tokens:1200}},quota:{}});
+ const shown=renderNativeStatusline(withUsage,null,now,{color:false});
+ assert.match(shown,/tok in:63\.4k out:346 cache:22\.1k/,'token line renders on narrow terminals in compact mode');
+ for(const line of shown.split('\n'))assert.ok(visibleWidth(line)<=76,`line overflow ${visibleWidth(line)}: ${line}`);
+ const hidden=renderNativeStatusline(withUsage,null,now,{color:false,show_tokens:false});
+ assert.doesNotMatch(hidden,/\btok /,'show_tokens:false hides the token line');
+ const noUsage=payload({terminal_width:100,context_window:{used_percentage:37,context_window_size:1048576},quota:{}});
+ const empty=renderNativeStatusline(noUsage,null,now,{color:false,show_tokens:true});
+ assert.doesNotMatch(empty,/\btok /,'no token line when AGY reports no current_usage');
+ const full=renderNativeStatusline(withUsage,null,now,{color:false,compact:false,show_tokens:true});
+ assert.doesNotMatch(full,/\btok /,'full layout keeps its 120-column gate for the token readout');
 });
 
 test('HUD metric grid keeps labels, bars, percentages and detail columns visually aligned',()=>{

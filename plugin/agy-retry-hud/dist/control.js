@@ -5,7 +5,7 @@ import {atomicJSON} from './state.js';
 
 export const CONTROL_SCHEMA_VERSION=1;
 export const DEFAULT_CONTROL_CONFIG=Object.freeze({
- hud:{enabled:true,visible:true,color:true,compact:true,multiline:true,showProgressBar:true,showPlan:true,showBranch:true,showCwd:true,showTokens:false,showAgentState:true,showRetry:true,showHandoff:true,barWidth:10},
+ hud:{enabled:true,visible:true,color:true,compact:true,multiline:true,showProgressBar:true,showPlan:true,showBranch:true,showCwd:true,showTokens:true,showAgentState:true,showRetry:true,showHandoff:true,barWidth:10},
  retry:{enabled:true,stopWhenWeeklyExhausted:true,weeklyRemainingThreshold:0.01,autoDisarmIncidentOnSuccess:true,requireCurrentIncidentBeforeDispatch:true,quotaFallbackMs:18000000,resetMarginMs:90000,jitterMs:30000,transientBaseMs:60000,transientCapMs:900000,maxTransientRetries:6,maxQuotaRetries:2,maxJobElapsedMs:86400000,watchdogMs:3600000},
  handoff:{enabled:true,snapshotAt:85,prepareAt:90,rolloverAt:95,cancelRolloverBelow:80,autoCreateNewSession:true,semanticSummary:true,mechanicalFallback:true},
  daemon:{enabled:true,autoStart:true,heartbeatMs:5000,idlePollMs:10000,waitQuotaPollMs:30000,waitBackoffPollMs:5000,nearDeadlineMs:60000,nearDeadlinePollMs:1000,activePollMs:500,maxConcurrentDispatch:1}
