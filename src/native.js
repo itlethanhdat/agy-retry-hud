@@ -19,6 +19,9 @@ const MANUAL_SUPERSEDE_STATES = new Set(['WAIT_QUOTA','WAIT_BACKOFF','RUNNING','
 const TERMINAL_INSTANCE_TTL_MS=30000;
 const SCHEDULER_HEARTBEAT_INTERVAL_MS=15000;
 const SCHEDULER_HEARTBEAT_STALE_MS=75000;
+// Telemetry older than this is not treated as evidence of live AGY activity when
+// deciding whether a scheduled retry may dispatch.
+const SNAPSHOT_ACTIVITY_FRESH_MS=300000;
 
 export function nativeRoot({platform=process.platform,home=os.homedir(),env=process.env}={}){
  if(env.AGY_RETRY_STATE_DIR)return path.resolve(env.AGY_RETRY_STATE_DIR,'native');
@@ -478,7 +481,13 @@ export async function runNativeWorker(root,id,{now=Date.now,sleep,adapter=startS
    if(weekly.status==='blocked'){setIncidentStatus(s,'BLOCKED',now(),{blockedAt:now(),resolution:'weekly_quota'});s.status='WEEKLY_BLOCKED';s.reason='weekly quota at or below safety threshold';s.weeklyResetAt=weekly.bucket?.resetAt||null;s.nextRetryAt=null;setSchedulerStatus(s,'BLOCKED',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
    if(['quota','long-quota'].includes(s.retryKind)&&weekly.status==='unknown'){setIncidentStatus(s,'NEEDS_USER',now(),{resolution:'weekly_quota_unknown'});s.status='NEEDS_USER';s.reason='weekly quota unavailable before quota retry';s.nextRetryAt=null;setSchedulerStatus(s,'NEEDS_USER',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
    if(s.snapshot?.toolConfirmationPending){setIncidentStatus(s,'NEEDS_USER',now(),{resolution:'tool_confirmation_pending'});s.status='NEEDS_USER';s.reason='tool confirmation pending';setSchedulerStatus(s,'NEEDS_USER',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
-   if((s.snapshot?.pendingInputCount||0)>0||(s.snapshot?.taskCount||0)>0||!['idle','unknown',undefined,null].includes(s.snapshot?.agentState)){
+   const snapshotAgeMs=now()-(s.snapshot?.observedAt||0);
+   // Telemetry stops arriving while AGY sits idle on a quota error, so a stale
+   // snapshot must not veto the scheduled dispatch: only fresh activity signals
+   // supersede the retry. Otherwise every reset-time dispatch is silently dropped
+   // and the user is forced to type manually to continue.
+   const snapshotFresh=Number.isFinite(s.snapshot?.observedAt)&&snapshotAgeMs>=0&&snapshotAgeMs<=SNAPSHOT_ACTIVITY_FRESH_MS;
+   if(snapshotFresh&&((s.snapshot?.pendingInputCount||0)>0||(s.snapshot?.taskCount||0)>0||!['idle','unknown',undefined,null].includes(s.snapshot?.agentState))){
     setIncidentStatus(s,'SUPERSEDED',now(),{supersededAt:now(),supersededBy:'native_activity'});s.status='IDLE';s.reason='native AGY activity superseded pending retry';s.nextRetryAt=null;setSchedulerStatus(s,'SUPERSEDED',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;
    }
    if(now()-s.startedAt>=(s.config?.maxJobElapsedMs||defaults.maxJobElapsedMs)){setIncidentStatus(s,'EXHAUSTED',now(),{resolution:'job_budget_expired'});s.status='EXHAUSTED';s.reason='job budget expired';setSchedulerStatus(s,'EXHAUSTED',now(),{nextRetryAt:null,completedAt:now()});saveNative(root,s);return s;}
