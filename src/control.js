@@ -33,14 +33,18 @@ export function validateControlConfig(input){
  if(d.maxConcurrentDispatch<1)throw Error('maxConcurrentDispatch must be >= 1');
  return c;
 }
-export function loadControlConfig({file=controlConfigPath(),env=process.env}={}){
+export function loadControlConfig({file=controlConfigPath()}={}){
  let raw={};try{raw=JSON.parse(fs.readFileSync(file,'utf8'));if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error('config must be an object');}catch(e){if(e.code!=='ENOENT')throw e;}
  // Backward-compatible flat HUD keys from v0.3.x.
  const hudRaw={...(raw.hud||{})};
  const flatMap={color:'color',multiline:'multiline',show_progress_bar:'showProgressBar',show_plan:'showPlan',show_branch:'showBranch',show_cwd:'showCwd',show_tokens:'showTokens',show_agent_state:'showAgentState',show_retry:'showRetry',bar_width:'barWidth'};
  for(const [oldKey,newKey] of Object.entries(flatMap))if(oldKey in raw&&!(newKey in hudRaw))hudRaw[newKey]=raw[oldKey];
  const c={hud:{...DEFAULT_CONTROL_CONFIG.hud,...hudRaw},retry:mergeSection(DEFAULT_CONTROL_CONFIG.retry,raw,'retry'),handoff:mergeSection(DEFAULT_CONTROL_CONFIG.handoff,raw,'handoff'),daemon:mergeSection(DEFAULT_CONTROL_CONFIG.daemon,raw,'daemon')};
- if(env.NO_COLOR!==undefined||env.TERM==='dumb')c.hud.color=false;
+ // NOTE: NO_COLOR / TERM=dumb sniffing is intentionally NOT applied here. It is a
+ // transient, runtime-only override (see loadHudConfig and renderNativeStatusline).
+ // Applying it here poisoned the saved config: any load→save roundtrip
+ // (repair, install, hud/retry/daemon toggles) run inside a dumb terminal would
+ // persist color:false forever, even in capable terminals afterwards.
  return validateControlConfig(c);
 }
 export function saveControlConfig(config,{file=controlConfigPath()}={}){validateControlConfig(config);atomicJSON(file,config);return file;}

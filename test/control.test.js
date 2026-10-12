@@ -9,3 +9,15 @@ test('HUD modes and daemon enablement have explicit non-ambiguous semantics',()=
 
 
 test('v0.4 config migrates to v0.5 defaults without losing existing retry/handoff choices',()=>{const dir=temp(),file=path.join(dir,'config.json');fs.writeFileSync(file,JSON.stringify({hud:{color:false,barWidth:7},retry:{enabled:false},handoff:{enabled:false}}));const c=loadControlConfig({file});assert.equal(c.hud.color,false);assert.equal(c.hud.barWidth,7);assert.equal(c.hud.enabled,true);assert.equal(c.hud.visible,true);assert.equal(c.retry.enabled,false);assert.equal(c.handoff.enabled,false);assert.equal(c.daemon.enabled,true);assert.equal(c.daemon.autoStart,true);});
+
+test('transient NO_COLOR/TERM=dumb never persists into the saved control config',()=>{
+ const dir=temp(),file=path.join(dir,'config.json'),dumbEnv={...process.env,TERM:'dumb',NO_COLOR:'1'};
+ // Loading under a dumb terminal must not flip the in-memory default...
+ assert.equal(loadControlConfig({file,env:dumbEnv}).hud.color,true);
+ // ...and a load→save roundtrip (repair/install/toggles) must not poison the file.
+ const c=loadControlConfig({file,env:dumbEnv});saveControlConfig(c,{file});
+ assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).hud.color,true);
+ // An explicit user choice in the file is still respected.
+ const dir2=temp(),file2=path.join(dir2,'config.json');fs.writeFileSync(file2,JSON.stringify({hud:{color:false}}));
+ assert.equal(loadControlConfig({file:file2,env:dumbEnv}).hud.color,false);
+});
