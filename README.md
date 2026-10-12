@@ -698,6 +698,11 @@ Compact HUD is enabled by default and normally uses two terminal rows:
 
 To restore the previous detailed layout, set `hud.compact` to `false` in the agy-retry-hud config.
 
+The HUD also shows a token readout (`tok in:<input> out:<output> cache:<cached>`, from
+`context_window.current_usage`) whenever AGY reports usage data. It is on by default via
+`hud.show_tokens`; set it to `false` to hide the line. In the detailed (non-compact) layout the
+readout appears inline on the context row on terminals at least 120 columns wide.
+
 If `/agy-retry-hud:setup` is missing from `/skills`, run the packaged repair once from the shell:
 
 ```bash
