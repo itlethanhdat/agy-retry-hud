@@ -1,5 +1,8 @@
 export const MIN_AGY_VERSION='1.1.15';
 export const RECOMMENDED_AGY_VERSION='1.2.13';
+// Single source of truth for this package's own version. Keep in sync with
+// package.json on release; daemon.js, cli.js and retryctl.js read it from here.
+export const PKG_VERSION='0.5.1';
 
 export function parseSemver(text){
  const m=String(text??'').match(/(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?(?:\s|$)/);

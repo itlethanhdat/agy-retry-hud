@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import {fileURLToPath} from 'node:url';import {parseArgs} from 'node:util';import {execFile} from 'node:child_process';import {promisify} from 'node:util';import readline from 'node:readline';
-import {loadConfig,pathsFor,validateConfig} from './config.js';import {Store,acquire,releaseDeadLock,keyFor} from './state.js';import {newJob,Supervisor} from './supervisor.js';import {QuotaProvider} from './quota.js';import {TerminalHUD,parseInput,sanitize} from './hud.js';import {MIN_AGY_VERSION,RECOMMENDED_AGY_VERSION,versionAtLeast} from './version.js';
+import {loadConfig,pathsFor,validateConfig} from './config.js';import {Store,acquire,releaseDeadLock,keyFor} from './state.js';import {newJob,Supervisor} from './supervisor.js';import {QuotaProvider} from './quota.js';import {TerminalHUD,parseInput,sanitize} from './hud.js';import {MIN_AGY_VERSION,RECOMMENDED_AGY_VERSION,versionAtLeast,PKG_VERSION} from './version.js';
 const exec=promisify(execFile);
-const help=`AGY HUD + Auto Retry 0.3.0 (pre-release; Node.js 24)
+const help=`AGY HUD + Auto Retry ${PKG_VERSION} (Node.js 24)
   agy-retry run [--prompt TEXT | --conversation ID] [--model MODEL]
   agy-retry resume --job JOB_ID
   agy-retry status [--job JOB_ID | --conversation ID] [--json]
