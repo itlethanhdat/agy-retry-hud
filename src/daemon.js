@@ -5,6 +5,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {atomicJSON,releaseDeadLock} from './state.js';
+import {PKG_VERSION} from './version.js';
 import {nativeRoot,runNativeWorker,runHandoffWorker,loadNative,saveNative,retrySchedulerDiagnostics,scheduleAutoHandoff} from './native.js';
 import {loadControlConfig,controlConfigPath} from './control.js';
 import {startSession} from './adapter.js';
@@ -22,7 +23,7 @@ export function daemonStatus({root=nativeRoot(),now=Date.now()}={}){
  return {running:alive&&heartbeatAgeMs!==null&&heartbeatAgeMs<=30000,processAlive:alive,pid:owner?.pid||null,startedAt:owner?.startedAt||null,version:owner?.version||null,heartbeatAt:heartbeatAt||null,heartbeatAgeMs,runtime};
 }
 function writeOwner(root,value){const p=daemonPaths({root});fs.mkdirSync(p.dir,{recursive:true,mode:0o700});atomicJSON(p.pid,value);}
-function claimDaemon(root,{now=Date.now(),version='0.5.0'}={}){
+function claimDaemon(root,{now=Date.now(),version=PKG_VERSION}={}){
  const p=daemonPaths({root});fs.mkdirSync(p.dir,{recursive:true,mode:0o700});const current=readJSON(p.pid);
  if(current?.pid&&current.pid!==process.pid&&pidAlive(current.pid))throw Object.assign(Error('daemon already running'),{code:'DAEMON_RUNNING',owner:current});
  writeOwner(root,{pid:process.pid,startedAt:now,version});return p;
@@ -32,7 +33,7 @@ export function ensureDaemon({root=nativeRoot(),config=loadControlConfig(),env=p
  if(config.daemon?.enabled===false||config.daemon?.autoStart===false)return {started:false,reason:'daemon disabled',status:daemonStatus({root})};
  const current=daemonStatus({root});if(current.processAlive)return {started:false,reused:true,status:current};
  clearDeadDaemonFiles({root});const entry=fileURLToPath(import.meta.url),child=spawn(process.execPath,[entry,'run','--state-root',root],{detached,stdio:'ignore',windowsHide:true,env:{...env,AGY_RETRY_DAEMON:'1'}});if(detached)child.unref();
- writeOwner(root,{pid:child.pid,startedAt:Date.now(),version:'0.5.0',status:'starting'});return {started:true,pid:child.pid,status:daemonStatus({root})};
+ writeOwner(root,{pid:child.pid,startedAt:Date.now(),version:PKG_VERSION,status:'starting'});return {started:true,pid:child.pid,status:daemonStatus({root})};
 }
 export async function stopDaemon({root=nativeRoot(),timeoutMs=3000}={}){const p=daemonPaths({root}),s=daemonStatus({root});if(!s.processAlive){try{fs.unlinkSync(p.pid);}catch{}return {stopped:true,alreadyStopped:true};}
  try{process.kill(s.pid,'SIGTERM');}catch{}

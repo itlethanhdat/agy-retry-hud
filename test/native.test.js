@@ -84,6 +84,17 @@ test('native worker cancels before dispatch when native TUI becomes active again
  assert.equal(out.status,'IDLE');assert.match(out.reason,/native AGY activity.*superseded/i);assert.equal(out.retryIncident.status,'SUPERSEDED');assert.equal(calls,0);
 });
 
+test('stale telemetry never supersedes a scheduled retry at reset time',async()=>{
+ const root=temp(),workspace=temp('agy-project-'),now=8_000_000;
+ // Last statusline render saw AGY working, but no telemetry arrived after the quota-error stop.
+ mergeStatusline(root,payload({quota:{},agent_state:'working'},workspace),now);
+ scheduleFromStop(root,{terminationReason:'error',error:'503 service unavailable',fullyIdle:true,conversationId:conv,workspacePaths:[workspace]},{now,config:{transientBaseMs:1000,transientCapMs:1000,jitterMs:0,maxJobElapsedMs:3600000}});
+ let sent=[],started=0;const adapter=()=>{started++;return {async *events(){yield {event:'init',conversation_id:conv,init:{cwd:workspace}};yield {event:'result',result:{conversation_id:conv,status:'SUCCESS',response:'ok'}};},async send(m){sent.push(m);},async close(){return {clean:true};},async abort(){return {clean:false};}}};
+ // The worker wakes 400s after the last telemetry (freshness window is 300s).
+ let t=now+400000;const out=await runNativeWorker(root,conv,{now:()=>t,sleep:async ms=>{t+=ms;},adapter});
+ assert.equal(out.status,'SUCCEEDED');assert.equal(started,1);assert.equal(sent.length,1);
+});
+
 
 
 test('PreInvocation supersedes a pending retry incident before a manual/new turn',()=>{

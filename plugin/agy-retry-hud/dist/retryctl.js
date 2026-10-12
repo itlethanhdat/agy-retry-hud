@@ -7,8 +7,9 @@ import {loadControlConfig,saveControlConfig,controlConfigPath,setConversationOve
 import {createHandoff,finalizeSemanticHandoff,listHandoffs,loadHandoff,exportHandoff,importHandoff,inspectPortable,validateWorkspace,handoffSummary,markConsumed} from './handoff.js';
 import {setupDoctor,repairSetup} from './setup.js';
 import {ensureDaemon,stopDaemon,restartDaemon,daemonStatus} from './daemon.js';
+import {PKG_VERSION} from './version.js';
 
-const HELP=`agy-retryctl v0.5.0
+const HELP=`agy-retryctl v${PKG_VERSION}
   agy-retryctl setup status
   agy-retryctl setup repair [--force-statusline]
   agy-retryctl doctor [--json]

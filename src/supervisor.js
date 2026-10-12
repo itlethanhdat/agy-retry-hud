@@ -22,8 +22,11 @@ export class Supervisor {
  }
  async wait(){
   for(;;){this.controller.signal.throwIfAborted();if(this.canceled)throw Error('canceled');
-   if(!this.job.paused&&this.clock.now()>=this.job.nextRetryAt)return;
    const at=this.job.paused?this.clock.now()+1000:this.job.nextRetryAt;
+   // A missing deadline must fail loudly: waitUntil(undefined) would resolve
+   // immediately and spin this loop at 100% CPU.
+   if(!Number.isFinite(at))throw Error('retry not scheduled');
+   if(!this.job.paused&&this.clock.now()>=at)return;
    await this.clock.waitUntil(at,this.controller.signal);
   }
  }
