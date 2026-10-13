@@ -279,7 +279,9 @@ git commit -m "feat: enterWaitingReset orchestration"
 - After `enterWaitingReset` returns `{resumed, account, session}`: transfer lock to that account (same pattern as P1 rotation), `watch(session)`, continue.
 - `{cancelled:true}` → print `đã hủy chờ.`, release lock, exit 0.
 - `{givenUp:true}` → print reason, release lock, exit 3.
-- `agybox cancel-wait`: touch the flag file; if no state file with `phase:'waiting'` → print `không có phiên nào đang chờ.` and exit 1.
+- `agybox cancel-wait`: touch the flag file (always exits 0 — idempotent;
+  the supervisor consumes the flag). If no state file with `phase:'waiting'`
+  exists, it still creates the flag and notes that nobody appears to be waiting.
 
 - [ ] **Step 1: Write the failing tests** (append to `test/run-cli.test.js`):
 

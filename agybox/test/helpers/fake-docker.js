@@ -20,6 +20,7 @@ const SCRIPT = [
   '    case "$*" in *"/usage"*)',
   '      RESET_S="${FAKE_RESET_IN_SECONDS:-3600}"',
   '      if [[ -n "$FAKE_QUOTA_OK_FILE" && -f "$FAKE_QUOTA_OK_FILE" ]]; then FRAC="0.7";',
+  '      elif [[ -n "$FAKE_ALL_EXHAUSTED" ]]; then FRAC="0";',
   '      elif [[ "$container" == "agy-a" ]]; then FRAC="0"; else FRAC="0.7"; fi',
   '      echo "{\\"quota\\":{\\"x 5h\\":{\\"remaining_fraction\\":$FRAC,\\"reset_in_seconds\\":$RESET_S}}}"',
   '      exit 0;;',

@@ -37,6 +37,13 @@ const realClock = {
   sleep: ms => new Promise(r => setTimeout(r, ms)),
 };
 
+/** consumeCancelFile(path) => true if a cancel flag existed (and was deleted). */
+export function consumeCancelFile(cancelFile) {
+  if (!cancelFile) return false;
+  try { fs.unlinkSync(cancelFile); return true; }
+  catch (e) { if (e.code !== 'ENOENT') throw e; return false; }
+}
+
 /**
  * waitUntilWake({wakeAt, cancelFile, pollMs, onTick, clock}) =>
  *   {woken:true} | {cancelled:true}
@@ -46,16 +53,11 @@ const realClock = {
  * for tests: {now(), sleep(ms)}.
  */
 export async function waitUntilWake({ wakeAt, cancelFile, pollMs = 5000, onTick, clock = realClock }) {
-  const consumeCancel = () => {
-    if (!cancelFile) return false;
-    try { fs.unlinkSync(cancelFile); return true; }
-    catch (e) { if (e.code !== 'ENOENT') throw e; return false; }
-  };
   while (clock.now() < wakeAt) {
-    if (consumeCancel()) return { cancelled: true };
+    if (consumeCancelFile(cancelFile)) return { cancelled: true };
     try { onTick?.(wakeAt - clock.now()); } catch {}
     await clock.sleep(Math.min(pollMs, Math.max(0, wakeAt - clock.now())));
   }
-  if (consumeCancel()) return { cancelled: true };
+  if (consumeCancelFile(cancelFile)) return { cancelled: true };
   return { woken: true };
 }

@@ -266,3 +266,19 @@ test('enterWaitingReset calls onPick when starting to wait', async () => {
   assert.equal(picks.length, 1);
   assert.equal(picks[0].account, 'a');
 });
+
+test('enterWaitingReset observes cancel during reset rechecks', async () => {
+  const { enterWaitingReset } = await import('../lib/supervisor.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wr-'));
+  const cancelFile = path.join(dir, 'cancel');
+  let t = 0;
+  const clock = { now: () => t, sleep: async ms => { t += ms; if (t >= 1000) fs.writeFileSync(cancelFile, 'x'); } };
+  const r = await enterWaitingReset({
+    accounts: [{ name: 'a' }], getQuota: async () => ({ error: 'x' }),
+    policy: { verifyTimeoutSec: 1, waitRecheckSec: 30, maxWaitCycles: 2, resumeGraceMs: 50 },
+    rotState: {}, handoffDir: dir,
+    spawnFor: () => { throw new Error('must not spawn'); },
+    stateFile: path.join(dir, 's.json'), cancelFile, clock, now: 0 });
+  assert.deepEqual(r, { cancelled: true });
+  assert.ok(!fs.existsSync(cancelFile), 'cancel file is consumed');
+});

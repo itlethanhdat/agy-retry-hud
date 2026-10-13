@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildHandoff, writeHandoff } from './handoff.js';
 import { nextRotationAllowed } from './rotate.js';
-import { pickNearestResetAccount, waitUntilWake } from './wait.js';
+import { pickNearestResetAccount, waitUntilWake, consumeCancelFile } from './wait.js';
 
 export class SupervisedSession {
   constructor({ spawnFn = defaultSpawn } = {}) {
@@ -181,11 +181,11 @@ async function trySpawnCandidate(spawnFor, acc, handoff, handoffDir, policy) {
   return { newSession, resumeMode };
 }
 
-function writeStateFile(stateFile, state) {
+function writeStateFile(stateFile, state, now = Date.now()) {
   if (!stateFile) return;
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
   const tmp = `${stateFile}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ ...state, updatedAt: Date.now() }));
+  fs.writeFileSync(tmp, JSON.stringify({ ...state, updatedAt: now }));
   fs.renameSync(tmp, stateFile);
 }
 
@@ -220,14 +220,22 @@ export async function enterWaitingReset({ accounts = [], getQuota, policy = {}, 
     let quotas = await gather();
     let pick = pickNearestResetAccount(accounts, quotas);
     for (let r = 0; r < 3 && !pick; r++) {
-      await clk.sleep(recheckMs);
+      // Sleep in slices so a cancel request is honored promptly instead of
+      // being delayed until the full recheck interval elapses.
+      const until = clk.now() + recheckMs;
+      let cancelled = false;
+      while (clk.now() < until) {
+        if (consumeCancelFile(cancelFile)) { cancelled = true; break; }
+        await clk.sleep(Math.min(5000, Math.max(0, until - clk.now())));
+      }
+      if (cancelled) return { cancelled: true };
       quotas = await gather();
       pick = pickNearestResetAccount(accounts, quotas);
     }
     if (!pick) return { givenUp: true };
 
     const wakeAt = pick.resetAt + bufferMs;
-    writeStateFile(stateFile, { phase: 'waiting', account: pick.account.name, window: pick.window, wakeAt });
+    writeStateFile(stateFile, { phase: 'waiting', account: pick.account.name, window: pick.window, wakeAt }, clk.now());
     onPick?.({ account: pick.account.name, window: pick.window, wakeAt });
     const w = await waitUntilWake({ wakeAt, cancelFile, pollMs: 5000, onTick, clock: clk });
     if (w.cancelled) return { cancelled: true };
@@ -245,7 +253,7 @@ export async function enterWaitingReset({ accounts = [], getQuota, policy = {}, 
       });
       const attempt = await trySpawnCandidate(spawnFor, pick.account, handoff, handoffDir, policy);
       if (attempt) {
-        writeStateFile(stateFile, { phase: 'active', account: pick.account.name });
+        writeStateFile(stateFile, { phase: 'active', account: pick.account.name }, clk.now());
         return { resumed: true, account: pick.account.name, session: attempt.newSession, resumeMode: attempt.resumeMode };
       }
     }
