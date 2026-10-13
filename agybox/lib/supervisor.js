@@ -102,25 +102,45 @@ function handoffMessage(h) {
  * the first with quota) instead of pre-fetching every quota for
  * selectNextAccount — fewer `docker exec` calls, identical order semantics.
  */
-export async function rotateOnce({ session, activeAccount, accounts = [], getQuota, policy = {}, rotState = {}, handoffDir, now = Date.now(), spawnFor }) {
+export async function rotateOnce({ session, activeAccount, accounts = [], getQuota, policy = {}, rotState = {}, handoffDir, now = Date.now(), spawnFor, manual = false, target = null }) {
+  // Manual rotation (hub "rotate now" / rotate-request bus): skip the
+  // verify-exhausted check and the cooldown, but keep the maxRotations guard
+  // and the flap quarantine.
+  const effPolicy = manual ? { ...policy, rotationCooldownSec: 0 } : policy;
   const allowed = nextRotationAllowed({
     rotationsThisSession: rotState.rotationsThisSession || 0,
-    lastRotationAt: rotState.lastRotationAt || 0, policy, now,
+    lastRotationAt: rotState.lastRotationAt || 0, policy: effPolicy, now,
   });
   if (!allowed.allowed) return { kept: true, reason: allowed.reason };
 
   const verifyMs = (policy.verifyTimeoutSec ?? 20) * 1000;
-  const v = await withTimeout(getQuota(activeAccount.name), verifyMs);
-  if (!v.ok) return { kept: true, reason: 'verify-failed' };
-  const b5 = (v.value?.buckets || []).find(b => b.window === '5h');
-  if (!b5 || b5.remainingFraction > 0) return { kept: true, reason: 'not-exhausted' };
+  if (!manual) {
+    const v = await withTimeout(getQuota(activeAccount.name), verifyMs);
+    if (!v.ok) return { kept: true, reason: 'verify-failed' };
+    const b5 = (v.value?.buckets || []).find(b => b.window === '5h');
+    if (!b5 || b5.remainingFraction > 0) return { kept: true, reason: 'not-exhausted' };
+  }
 
-  // Candidate order: policy.order first, then any registered accounts not
-  // listed (same semantics as selectNextAccount in lib/rotate.js).
-  const orderPref = policy.order?.length ? policy.order : [];
-  const regNames = accounts.map(a => a.name);
-  const order = [...orderPref.filter(n => regNames.includes(n)), ...regNames.filter(n => !orderPref.includes(n))];
   const notBefore = rotState.notBefore instanceof Map ? rotState.notBefore : new Map();
+
+  // Targeted manual rotation: validate the target up front (all {kept}
+  // returns below happen while the old session is still alive).
+  let order;
+  if (target) {
+    const acc = accounts.find(a => a.name === target);
+    if (!acc) return { kept: true, reason: 'unknown-target' };
+    if ((notBefore.get(target) || 0) > now) return { kept: true, reason: 'target-quarantined' };
+    const qv = await withTimeout(getQuota(target), verifyMs);
+    const qb = qv.ok ? (qv.value?.buckets || []).find(b => b.window === '5h') : null;
+    if (!qb || qb.remainingFraction <= 0) return { kept: true, reason: 'target-exhausted' };
+    order = [target];
+  } else {
+    // Candidate order: policy.order first, then any registered accounts not
+    // listed (same semantics as selectNextAccount in lib/rotate.js).
+    const orderPref = policy.order?.length ? policy.order : [];
+    const regNames = accounts.map(a => a.name);
+    order = [...orderPref.filter(n => regNames.includes(n)), ...regNames.filter(n => !orderPref.includes(n))];
+  }
 
   const handoff = buildHandoff({
     sessionId: rotState.sessionId || '', fromAccount: activeAccount.name,
@@ -132,17 +152,22 @@ export async function rotateOnce({ session, activeAccount, accounts = [], getQuo
   await session.gracefulStop();
 
   // Try candidates in order; a spawn failure moves to the next candidate
-  // instead of stranding the user with no session.
+  // instead of stranding the user with no session. A targeted rotation has a
+  // single pre-validated candidate; its spawn failure falls through to
+  // {exhausted:true} so the caller degrades into the wait-for-reset flow
+  // rather than dying with no session.
   let chosen = null;
   for (const name of order) {
     if (name === activeAccount.name) continue;
-    if ((notBefore.get(name) || 0) > now) continue;
+    if (!target && (notBefore.get(name) || 0) > now) continue;
     const acc = accounts.find(a => a.name === name);
     if (!acc) continue;
-    const qv = await withTimeout(getQuota(name), verifyMs);
-    if (!qv.ok) continue;
-    const qb = (qv.value?.buckets || []).find(b => b.window === '5h');
-    if (!qb || qb.remainingFraction <= 0) continue;
+    if (!target) {
+      const qv = await withTimeout(getQuota(name), verifyMs);
+      if (!qv.ok) continue;
+      const qb = (qv.value?.buckets || []).find(b => b.window === '5h');
+      if (!qb || qb.remainingFraction <= 0) continue;
+    }
     const attempt = await trySpawnCandidate(spawnFor, acc, handoff, handoffDir, policy);
     if (!attempt) continue;
     chosen = { acc, ...attempt };
@@ -306,4 +331,54 @@ export function acquireLock(root, name) {
 
 export function releaseLock(root, name) {
   try { fs.unlinkSync(path.join(root, 'locks', `${name}.json`)); } catch {}
+}
+
+/** supervisorActive(root) => true when any account lock is held by a live pid. */
+export function supervisorActive(root) {
+  let files = [];
+  try { files = fs.readdirSync(path.join(root, 'locks')); } catch { return false; }
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      const cur = JSON.parse(fs.readFileSync(path.join(root, 'locks', f), 'utf8'));
+      if (cur?.pid && pidAlive(cur.pid)) return true;
+    } catch {}
+  }
+  return false;
+}
+
+// ---- rotate-request bus (H1-1) ----
+// Cross-process "rotate now" signal shared by the hub API (H1-2) and the
+// agy-retry-hud daemon (P3-3). One-shot: takeRotateRequest consumes the file.
+// Stale requests (older than maxAgeMs, or older than the reader's start) are
+// ignored AND consumed so a fresh supervisor never inherits an old order.
+const ROTATE_REQUEST_FILE = 'rotate-request.json';
+
+/**
+ * requestRotate(root, {to, source}={}) — signal a running supervisor to
+ * rotate. `to` (optional) names the target account.
+ */
+export function requestRotate(root, { to = null, source = 'cli' } = {}) {
+  fs.mkdirSync(root, { recursive: true });
+  const tmp = path.join(root, `${ROTATE_REQUEST_FILE}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify({ to, requestedAt: Date.now(), source }));
+  fs.renameSync(tmp, path.join(root, ROTATE_REQUEST_FILE));
+}
+
+/**
+ * takeRotateRequest(root, {now, maxAgeMs=60000, since=0}={}) =>
+ *   {to, requestedAt} | null
+ */
+export function takeRotateRequest(root, { now = Date.now(), maxAgeMs = 60000, since = 0 } = {}) {
+  const file = path.join(root, ROTATE_REQUEST_FILE);
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  try { fs.unlinkSync(file); } catch {} // one-shot: always consumed
+  let req;
+  try { req = JSON.parse(raw); } catch { return null; }
+  const at = Number(req?.requestedAt);
+  if (!Number.isFinite(at)) return null;
+  if (now - at > maxAgeMs) return null; // stale
+  if (at < since) return null; // predates this supervisor's start
+  return { to: req.to ?? null, requestedAt: at };
 }
