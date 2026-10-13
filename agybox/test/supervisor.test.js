@@ -282,3 +282,72 @@ test('enterWaitingReset observes cancel during reset rechecks', async () => {
   assert.deepEqual(r, { cancelled: true });
   assert.ok(!fs.existsSync(cancelFile), 'cancel file is consumed');
 });
+
+test('takeRotateRequest ignores stale requests and consumes on read', async () => {
+  const { requestRotate, takeRotateRequest } = await import('../lib/supervisor.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rq-'));
+  const reqFile = path.join(dir, 'rotate-request.json');
+  // stale: older than maxAgeMs → ignored (and consumed)
+  requestRotate(dir, { to: 'b' });
+  assert.equal(takeRotateRequest(dir, { now: Date.now() + 61000 }), null);
+  assert.ok(!fs.existsSync(reqFile), 'stale request is consumed');
+  // fresh request
+  const t = Date.now();
+  requestRotate(dir, { to: 'b' });
+  const r = takeRotateRequest(dir, { now: t + 1000, since: t - 1000 });
+  assert.equal(r.to, 'b');
+  assert.ok(r.requestedAt >= t);
+  assert.equal(takeRotateRequest(dir, { now: t + 1000 }), null); // consumed
+  // older than supervisor start → ignored (and consumed)
+  requestRotate(dir, {});
+  assert.equal(takeRotateRequest(dir, { now: t + 2000, since: t + 3000 }), null);
+  assert.ok(!fs.existsSync(reqFile));
+});
+
+test('rotateOnce with manual:true rotates despite remaining quota', async () => {
+  const { rotateOnce } = await import('../lib/supervisor.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'h5-'));
+  const spawned = [];
+  const r = await rotateOnce({ session: fakeSession(), activeAccount: { name: 'a', container: 'agy-a' },
+    accounts: [{ name: 'a', container: 'agy-a' }, { name: 'b', container: 'agy-b' }],
+    getQuota: async () => qHalf, // a still HAS quota
+    policy: { ...POL, rotationCooldownSec: 30 },
+    rotState: { rotationsThisSession: 0, lastRotationAt: Date.now(), sessionId: 's-man' },
+    handoffDir: dir, now: Date.now(), manual: true,
+    spawnFor: (a, args) => { spawned.push(a.name); return fakeSession(); } });
+  assert.equal(r.to, 'b'); // cooldown skipped for manual
+  assert.deepEqual(spawned, ['b']);
+});
+
+test('rotateOnce with target honors it, rejects exhausted target', async () => {
+  const { rotateOnce } = await import('../lib/supervisor.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'h5-'));
+  const r = await rotateOnce({ session: fakeSession(), activeAccount: { name: 'a' },
+    accounts: [{ name: 'a' }, { name: 'b' }], getQuota: async (n) => n === 'a' ? q0 : qHalf,
+    policy: POL, rotState: { rotationsThisSession: 0, lastRotationAt: 0, sessionId: 's-t' },
+    handoffDir: dir, now: 100000, manual: true, target: 'b',
+    spawnFor: () => fakeSession() });
+  assert.equal(r.to, 'b');
+  const r2 = await rotateOnce({ session: fakeSession(), activeAccount: { name: 'a' },
+    accounts: [{ name: 'a' }, { name: 'b' }], getQuota: async () => q0,
+    policy: POL, rotState: { rotationsThisSession: 0, lastRotationAt: 0, sessionId: 's-t2' },
+    handoffDir: dir, now: 100000, manual: true, target: 'b',
+    spawnFor: () => { throw new Error('must not spawn'); } });
+  assert.deepEqual(r2, { kept: true, reason: 'target-exhausted' });
+  const r3 = await rotateOnce({ session: fakeSession(), activeAccount: { name: 'a' },
+    accounts: [{ name: 'a' }, { name: 'b' }], getQuota: async () => qHalf,
+    policy: POL, rotState: { rotationsThisSession: 0, lastRotationAt: 0, sessionId: 's-t3' },
+    handoffDir: dir, now: 100000, manual: true, target: 'ghost',
+    spawnFor: () => { throw new Error('must not spawn'); } });
+  assert.deepEqual(r3, { kept: true, reason: 'unknown-target' });
+});
+
+test('supervisorActive reflects live locks', async () => {
+  const { acquireLock, releaseLock, supervisorActive } = await import('../lib/supervisor.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-'));
+  assert.equal(supervisorActive(dir), false);
+  assert.ok(acquireLock(dir, 'a').ok);
+  assert.equal(supervisorActive(dir), true);
+  releaseLock(dir, 'a');
+  assert.equal(supervisorActive(dir), false);
+});

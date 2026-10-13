@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {mergeStatusline,loadNative,renderNativeStatusline,scheduleFromStop,scheduleFromPreInvocation,runNativeWorker,saveNative,visibleWidth,selectDisplayQuotas,schedulerHealth,retrySchedulerDiagnostics,fmtCountdown} from '../src/native.js';
+import {DEFAULT_CONTROL_CONFIG} from '../src/control.js';
 
 const conv='12345678-abcd-ef01-2345-6789abcdef01';
 function temp(prefix='agy-native-'){return fs.mkdtempSync(path.join(os.tmpdir(),prefix));}
@@ -257,4 +258,64 @@ test('schedule metadata records worker pid, deadline source, retry reason and bu
 test('quota scheduler metadata records server reset source and quota budget',()=>{
  const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');mergeStatusline(root,payload({quota:{}}),now);const error='Individual quota reached. Resets in 2h23m10s';
  scheduleFromStop(root,{executionNum:2,terminationReason:'error',error,fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project']},{now,config:{resetMarginMs:90_000,jitterMs:0,maxQuotaRetries:2},spawnWorker:()=>process.pid});const state=loadNative(root,conv);assert.equal(state.retryLabel,'QUOTA');assert.equal(state.scheduler.deadlineSource,'server');assert.equal(state.scheduler.attempt,1);assert.equal(state.scheduler.maxAttempts,2);assert.equal(state.scheduler.retryLabel,'QUOTA');
+});
+
+test('retry.policy=rotate emits rotate-request and skips local wait when a supervisor is active',()=>{
+  const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');mergeStatusline(root,payload(),now);
+ const bus=fs.mkdtempSync(path.join(os.tmpdir(),'agybox-bus-'));
+ const prev=process.env.AGYBOX_ROOT;process.env.AGYBOX_ROOT=bus;
+ try{
+  fs.mkdirSync(path.join(bus,'locks'),{recursive:true});
+  fs.writeFileSync(path.join(bus,'locks','a.json'),JSON.stringify({pid:process.pid,startedAt:now}));
+  let spawned=0;
+  const stop={terminationReason:'error',error:'RESOURCE_EXHAUSTED (code 429): Individual quota reached',fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project'],modelName:'gemini-test'};
+  const ctl={...DEFAULT_CONTROL_CONFIG,retry:{...DEFAULT_CONTROL_CONFIG.retry,policy:'rotate'}};
+  const out=scheduleFromStop(root,stop,{now,config:{resetMarginMs:90000,jitterMs:0},controlConfig:ctl,spawnWorker:()=>{spawned++;}});
+  assert.equal(out.scheduled,false);
+  assert.equal(out.rotated,true);
+  assert.equal(spawned,0);
+  const req=JSON.parse(fs.readFileSync(path.join(bus,'rotate-request.json'),'utf8'));
+  assert.equal(req.source,'daemon');
+  const state=loadNative(root,conv);
+  assert.equal(state.retryKind,'rotated');
+  assert.equal(state.nextRetryAt,null);
+  assert.equal(state.retryIncident.status,'RESOLVED');
+ }finally{if(prev===undefined)delete process.env.AGYBOX_ROOT;else process.env.AGYBOX_ROOT=prev;}
+});
+
+test('retry.policy=rotate falls back to wait when no supervisor is active',()=>{
+  const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');mergeStatusline(root,payload(),now);
+ const bus=fs.mkdtempSync(path.join(os.tmpdir(),'agybox-bus-'));
+ const prev=process.env.AGYBOX_ROOT;process.env.AGYBOX_ROOT=bus;
+ try{
+  let spawned=0;
+  const stop={terminationReason:'error',error:'RESOURCE_EXHAUSTED (code 429): Individual quota reached',fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project'],modelName:'gemini-test'};
+  const ctl={...DEFAULT_CONTROL_CONFIG,retry:{...DEFAULT_CONTROL_CONFIG.retry,policy:'rotate'}};
+  const out=scheduleFromStop(root,stop,{now,config:{resetMarginMs:90000,jitterMs:0},controlConfig:ctl,spawnWorker:()=>{spawned++;return 4242;}});
+  assert.equal(out.scheduled,true);
+  assert.equal(spawned,1);
+  assert.equal(out.reason,'no agybox supervisor active; falling back to wait');
+  assert.ok(!fs.existsSync(path.join(bus,'rotate-request.json')));
+  const state=loadNative(root,conv);
+  assert.equal(state.status,'WAIT_QUOTA');
+  assert.equal(state.retryKind,'quota');
+ }finally{if(prev===undefined)delete process.env.AGYBOX_ROOT;else process.env.AGYBOX_ROOT=prev;}
+});
+
+test('default retry.policy=wait keeps existing behavior (no rotate-request, no extra fields)',()=>{
+  const root=temp(),now=Date.parse('2030-01-01T00:00:00Z');mergeStatusline(root,payload(),now);
+ const bus=fs.mkdtempSync(path.join(os.tmpdir(),'agybox-bus-'));
+ const prev=process.env.AGYBOX_ROOT;process.env.AGYBOX_ROOT=bus;
+ try{
+  let spawned=0;
+  const stop={terminationReason:'error',error:'RESOURCE_EXHAUSTED (code 429): Individual quota reached',fullyIdle:true,conversationId:conv,workspacePaths:['/tmp/project'],modelName:'gemini-test'};
+  const out=scheduleFromStop(root,stop,{now,config:{resetMarginMs:90000,jitterMs:0},controlConfig:DEFAULT_CONTROL_CONFIG,spawnWorker:()=>{spawned++;return 4242;}});
+  assert.equal(out.scheduled,true);
+  assert.equal(spawned,1);
+  assert.equal(out.rotated,undefined);
+  assert.equal(out.reason,undefined);
+  assert.ok(!fs.existsSync(path.join(bus,'rotate-request.json')));
+  const state=loadNative(root,conv);
+  assert.equal(state.status,'WAIT_QUOTA');
+ }finally{if(prev===undefined)delete process.env.AGYBOX_ROOT;else process.env.AGYBOX_ROOT=prev;}
 });

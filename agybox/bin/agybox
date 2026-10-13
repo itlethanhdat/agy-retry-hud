@@ -9,7 +9,7 @@ import { fmtCountdown } from '../lib/quota.js';
 import { matchQuotaSignal } from '../lib/signals.js';
 import { selectNextAccount } from '../lib/rotate.js';
 import { summarizeTranscript } from '../lib/handoff.js';
-import { SupervisedSession, rotateOnce, acquireLock, releaseLock, getGitInfo, enterWaitingReset } from '../lib/supervisor.js';
+import { SupervisedSession, rotateOnce, acquireLock, releaseLock, getGitInfo, enterWaitingReset, takeRotateRequest } from '../lib/supervisor.js';
 import { startHub } from '../hub/server.js';
 
 const [, , cmd, ...args] = process.argv;
@@ -128,7 +128,10 @@ async function cmdRun(runArgs) {
     else sess.on('exit', onExit);
   }
 
-  async function doRotate() {
+  async function doRotate({ manual = false, target = null } = {}) {
+    // Re-read policy on every rotation so hub config edits apply without a
+    // supervisor restart.
+    const freshPolicy = loadConfig().rotation;
     const prevActive = active.name, prevAt = rotState.lastRotationAt, now = Date.now();
     // Handoff context: transcript tail + best-effort git snapshot, so the
     // fallback path (Review Focus #4) never resumes empty-handed.
@@ -140,11 +143,17 @@ async function cmdRun(runArgs) {
     try {
       r = await rotateOnce({
         session: current, activeAccount: active, accounts,
-        getQuota: freshQuota, policy, rotState,
-        handoffDir, now, spawnFor,
+        getQuota: freshQuota, policy: freshPolicy, rotState,
+        handoffDir, now, spawnFor, manual, target,
       });
     } finally {
       rotationInFlight = false;
+    }
+    if (r.kept) {
+      // Manual rotation declined (unknown/exhausted target, guards): the old
+      // session is still alive; just tell the user.
+      if (manual) console.error(`agybox: không rotate được (${r.reason})`);
+      return;
     }
     if (r.exhausted) {
       // P2: all accounts exhausted → wait for the nearest reset instead of
@@ -230,6 +239,22 @@ async function cmdRun(runArgs) {
   watch(current);
   console.log(`supervised session on '${acc.name}' (${acc.container}); Ctrl-C to stop`);
   process.on('SIGINT', async () => { try { await current.gracefulStop(); } catch {} writeIdleState(); releaseLock(root, lockedName); process.exit(0); });
+  // H1-1: poll the rotate-request bus — hub "rotate now" (H1-2) and the
+  // agy-retry-hud daemon's retry.policy=rotate (P3-3) both signal through
+  // here. Requests older than this supervisor's start are ignored.
+  const startedAt = Date.now();
+  setInterval(() => {
+    if (rotating) return;
+    let req = null;
+    try { req = takeRotateRequest(root, { since: startedAt }); }
+    catch (e) { console.error('agybox:', e.message); return; }
+    if (!req) return;
+    rotating = true;
+    console.log(`⟳ rotate theo yêu cầu${req.to ? ` → '${req.to}'` : ''}`);
+    doRotate({ manual: true, target: req.to })
+      .catch(e => console.error('agybox: rotation failed:', e.message))
+      .finally(() => { rotating = false; });
+  }, 5000);
   await new Promise(() => {}); // run until the session exits or SIGINT
 }
 

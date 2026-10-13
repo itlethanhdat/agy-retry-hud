@@ -11,6 +11,13 @@ export function dockerAvailable() {
   return cached;
 }
 
+/**
+ * resetDockerCache() — clears the dockerAvailable() cache so the next call
+ * re-probes. The hub's "re-check" button calls this via ?fresh=1, so a Docker
+ * installed while the hub is running is picked up without a restart.
+ */
+export function resetDockerCache() { cached = null; }
+
 export function dockerExec(container, args, { timeout = 30000 } = {}) {
   if (!dockerAvailable()) return { ok: false, error: 'docker-unavailable' };
   try {

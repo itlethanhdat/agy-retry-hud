@@ -21,3 +21,20 @@ test('transient NO_COLOR/TERM=dumb never persists into the saved control config'
  const dir2=temp(),file2=path.join(dir2,'config.json');fs.writeFileSync(file2,JSON.stringify({hud:{color:false}}));
  assert.equal(loadControlConfig({file:file2,env:dumbEnv}).hud.color,false);
 });
+
+test('retry.policy defaults to wait and normalizes unknown values',()=>{
+ const dir=temp(),file=path.join(dir,'config.json');
+ // default when the file (or the key) is absent
+ assert.equal(loadControlConfig({file}).retry.policy,'wait');
+ fs.writeFileSync(file,JSON.stringify({retry:{}}));
+ assert.equal(loadControlConfig({file}).retry.policy,'wait');
+ // explicit rotate survives the load
+ fs.writeFileSync(file,JSON.stringify({retry:{policy:'rotate'}}));
+ assert.equal(loadControlConfig({file}).retry.policy,'rotate');
+ // unknown values normalize to wait instead of throwing on load
+ fs.writeFileSync(file,JSON.stringify({retry:{policy:'nope'}}));
+ assert.equal(loadControlConfig({file}).retry.policy,'wait');
+ // saving an invalid policy is rejected explicitly
+ const c=loadControlConfig({file});c.retry.policy='nope';
+ assert.throws(()=>saveControlConfig(c,{file}),/policy/);
+});

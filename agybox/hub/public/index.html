@@ -9,12 +9,16 @@
           --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.5 system-ui,sans-serif; }
-  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
   header h1 { margin:0; font-size:18px; }
-  header .sub { color:var(--dim); font-size:12px; }
+  header .sub { color:var(--dim); font-size:12px; margin-left:auto; }
+  nav { display:flex; gap:4px; }
+  nav a { color:var(--dim); text-decoration:none; font-size:13px; padding:6px 12px; border-radius:8px; border:1px solid transparent; }
+  nav a:hover { color:var(--txt); border-color:var(--line); }
+  nav a.active { color:var(--txt); background:var(--card); border-color:var(--line); }
   main { padding:20px; max-width:1100px; margin:0 auto; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
   .card h2 { margin:0 0 4px; font-size:16px; display:flex; align-items:center; gap:8px; }
   .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
   .dot.up { background:var(--ok); } .dot.down { background:var(--dim); } .dot.err { background:var(--bad); }
@@ -33,27 +37,154 @@
   .tag { font-size:11px; padding:2px 8px; border-radius:10px; background:#0b0f14; border:1px solid var(--line); }
   footer { padding:16px 20px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
   .empty { color:var(--dim); padding:40px 0; text-align:center; }
+  /* H1 actions */
+  .banner { background:#3a2b00; border-bottom:1px solid var(--warn); color:#f0d090; padding:10px 20px; font-size:14px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .banner b { font-variant-numeric:tabular-nums; }
+  .btn { background:#0b0f14; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:6px 14px; font-size:13px; cursor:pointer; }
+  .btn:hover:not(:disabled) { border-color:var(--acc); color:#fff; }
+  .btn:disabled { opacity:.45; cursor:default; }
+  .btn-sm { padding:3px 10px; font-size:12px; margin-top:10px; }
+  .btn-danger { border-color:#5a2b2b; }
+  .btn-danger:hover:not(:disabled) { border-color:var(--bad); }
+  .msg { font-size:13px; color:var(--dim); margin-left:8px; }
+  .msg.ok { color:var(--ok); } .msg.err { color:var(--bad); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+  input, select { background:#0b0f14; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:13px; }
+  input:focus, select:focus { outline:none; border-color:var(--acc); }
+  .log { background:#0b0f14; border:1px solid var(--line); border-radius:8px; padding:10px 12px; font:12px/1.6 ui-monospace,monospace; height:320px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
+  .log div { padding:1px 0; }
+  .form { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; margin:12px 0; }
+  .form label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--dim); }
+  .dim { color:var(--dim); font-size:13px; }
+  code { background:#0b0f14; padding:2px 6px; border-radius:4px; font-size:12px; }
+  .dashbar { display:flex; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:8px; }
+  .card .actions { margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; }
+  /* H2 setup center */
+  .manual { margin-top:8px; font-size:13px; color:var(--dim); background:#0b0f14; border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  .manual div { margin:2px 0; }
+  @keyframes pulseslide { 0% { margin-left:0; } 100% { margin-left:60%; } }
+  .bar i.pulse { width:40% !important; background:var(--acc) !important; animation:pulseslide 1.2s ease-in-out infinite alternate; }
+  #screen-setup ol.dim li { margin:6px 0; }
 </style>
 </head>
 <body>
 <header>
   <h1>📦 agy hub</h1>
+  <nav id="nav">
+    <a href="#/" data-screen="dashboard">Dashboard</a>
+    <a href="#/session" data-screen="session">Session</a>
+    <a href="#/accounts" data-screen="accounts">Accounts</a>
+    <a href="#/config" data-screen="config">Config</a>
+    <a href="#/setup" data-screen="setup">Setup</a>
+  </nav>
   <span class="sub" id="conn">đang kết nối…</span>
 </header>
+<div id="waitbanner" class="banner" hidden></div>
 <main>
-  <div id="accounts" class="grid"></div>
-  <div class="ws">
-    <h3>Workspace mappings</h3>
-    <div id="workspaces"></div>
-  </div>
+  <section id="screen-dashboard">
+    <div class="dashbar">
+      <button id="btn-start-session" class="btn">▶ Start session</button>
+      <span id="dashmsg" class="msg"></span>
+    </div>
+    <div id="accounts" class="grid"></div>
+    <div class="ws">
+      <h3>Workspace mappings</h3>
+      <div id="workspaces"></div>
+    </div>
+  </section>
+  <section id="screen-session" hidden>
+    <div class="card">
+      <h2>Supervised session</h2>
+      <div id="sess-status" class="dim">…</div>
+      <div class="row">
+        <select id="sess-account" title="account"></select>
+        <button id="btn-sess-start" class="btn">▶ Start</button>
+        <button id="btn-sess-stop" class="btn btn-danger">⏹ Stop</button>
+        <span id="sessmsg" class="msg"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Log</h2>
+      <div id="sesslog" class="log"></div>
+    </div>
+  </section>
+  <section id="screen-accounts" hidden>
+    <div class="card">
+      <h2>Thêm account</h2>
+      <div class="row">
+        <input id="acc-name" placeholder="tên (a-z, 0-9, -, _)" size="22">
+        <input id="acc-email" placeholder="email (tùy chọn)" size="26">
+        <button id="btn-acc-add" class="btn">＋ Add</button>
+      </div>
+      <div id="accmsg" class="msg" style="margin:8px 0 0"></div>
+    </div>
+    <div class="card">
+      <h2>Đăng nhập thủ công</h2>
+      <p class="dim">Mở terminal, chạy lệnh sau cho container của account rồi đăng nhập Google trong browser. Xong bấm <b>Verify</b> ở account tương ứng để kiểm tra quota.</p>
+      <code>docker exec -it &lt;container&gt; agy login</code>
+    </div>
+    <div id="acc-list" class="grid"></div>
+  </section>
+  <section id="screen-config" hidden>
+    <div class="card">
+      <h2>Rotation policy</h2>
+      <div class="form">
+        <label>Thứ tự ưu tiên (order, cách nhau bằng dấu phẩy)<input id="cfg-order" placeholder="vd: a, b"></label>
+        <label>maxRotationsPerSession (1–32)<input id="cfg-maxrot" type="number" min="1" max="32"></label>
+        <label>rotationCooldownSec (0–3600)<input id="cfg-cooldown" type="number" min="0" max="3600"></label>
+        <label>verifyTimeoutSec (5–120)<input id="cfg-verify" type="number" min="5" max="120"></label>
+        <label>resetBufferSec (0–900)<input id="cfg-buffer" type="number" min="0" max="900"></label>
+        <label>waitRecheckSec (10–3600)<input id="cfg-recheck" type="number" min="10" max="3600"></label>
+      </div>
+      <div class="row">
+        <button id="btn-cfg-save" class="btn">💾 Lưu</button>
+        <span id="cfgmsg" class="msg"></span>
+      </div>
+    </div>
+  </section>
+  <section id="screen-setup" hidden>
+    <div class="card">
+      <h2>Setup checklist</h2>
+      <p class="dim">Mỗi bước được kiểm tra trực tiếp khi tải trang. Nút "Chạy" chỉ xuất hiện khi có bước chạy tự động an toàn; các bước còn lại hiển thị hướng dẫn thủ công — không giả vờ có fix tự động.</p>
+      <div class="row" style="margin-top:0;margin-bottom:12px">
+        <button id="btn-setup-recheck" class="btn btn-sm">🔄 Kiểm tra lại</button>
+        <span id="setupmsg" class="msg"></span>
+      </div>
+      <div id="setup-steps"><div class="dim">Đang kiểm tra…</div></div>
+    </div>
+    <div class="card">
+      <h2>📱 Truy cập từ điện thoại (Tailscale)</h2>
+      <div id="tailscale"><div class="dim">Đang kiểm tra…</div></div>
+    </div>
+  </section>
 </main>
-<footer>H0 · chỉ đọc · <span id="ts"></span></footer>
+<footer>H2 · setup center · <span id="ts"></span></footer>
 <script>
 const token = new URLSearchParams(location.search).get('token') || '';
 const api = (p) => fetch(p + (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)).then(r => {
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 });
+async function apiWrite(method, p, body) {
+  const r = await fetch(p + '?token=' + encodeURIComponent(token), {
+    method, headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+const apiPost = (p, body) => apiWrite('POST', p, body);
+const apiPut = (p, body) => apiWrite('PUT', p, body);
+async function apiDelete(p) {
+  const r = await fetch(p + '?token=' + encodeURIComponent(token), { method: 'DELETE' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 function fmtCountdown(ms) {
   const t = Math.max(0, Math.ceil(ms / 1000));
   const s = t % 60, m = Math.floor(t / 60) % 60, h = Math.floor(t / 3600);
@@ -64,6 +195,7 @@ function fmtCountdown(ms) {
 }
 function barColor(f) { return f <= 0 ? 'var(--bad)' : f < 0.25 ? 'var(--warn)' : 'var(--ok)'; }
 let last = null;
+let lastAccounts = [];
 function render(data) {
   last = data;
   document.getElementById('ts').textContent = 'cập nhật ' + new Date(data.ts).toLocaleTimeString('vi-VN');
@@ -75,37 +207,380 @@ function render(data) {
     let q = '';
     if (a.buckets) {
       q = a.buckets.map(b => `
-        <div class="qrow"><div class="lbl"><span>${b.window}</span><span>${Math.round(b.remainingFraction*100)}%</span></div>
+        <div class="qrow"><div class="lbl"><span>${esc(b.window)}</span><span>${Math.round(b.remainingFraction*100)}%</span></div>
         <div class="bar"><i style="width:${Math.round(b.remainingFraction*100)}%;background:${barColor(b.remainingFraction)}"></i></div></div>`).join('');
     }
     const reset = a.nearestResetAt
       ? `<div class="reset">reset sau <b data-reset="${a.nearestResetAt}">${fmtCountdown(a.nearestResetAt - Date.now())}</b></div>` : '';
-    const err = a.error && a.error !== 'container-down' ? `<div class="err">${a.error}${a.detail ? ': ' + a.detail : ''}</div>` : '';
-    return `<div class="card"><h2><span class="dot ${dot}"></span>${a.name}</h2>
-      <div class="email">${a.email || ''} · ${a.container} · ${st}</div>${q}${reset}${err}</div>`;
+    const err = a.error && a.error !== 'container-down' ? `<div class="err">${esc(a.error)}${a.detail ? ': ' + esc(a.detail) : ''}</div>` : '';
+    return `<div class="card"><h2><span class="dot ${dot}"></span>${esc(a.name)}</h2>
+      <div class="email">${esc(a.email || '')} · ${esc(a.container)} · ${esc(st)}</div>${q}${reset}${err}
+      <div class="actions"><button class="btn btn-sm" onclick="rotateNow('${esc(a.name)}', this)">🔄 Rotate now</button></div></div>`;
   }).join('');
+  lastAccounts = data.accounts || [];
   const w = document.getElementById('workspaces');
   w.innerHTML = data.config && data.config.workspaces.length
     ? `<table><tr><th>Scope</th><th>Mode</th><th>Host path</th><th>Container path</th></tr>` +
-      data.config.workspaces.map(m => `<tr><td><span class="tag">${m.scope}</span></td><td>${m.mode}</td><td><code>${m.hostPath}</code></td><td><code>${m.containerPath}</code></td></tr>`).join('') + `</table>`
+      data.config.workspaces.map(m => `<tr><td><span class="tag">${esc(m.scope)}</span></td><td>${esc(m.mode)}</td><td><code>${esc(m.hostPath)}</code></td><td><code>${esc(m.containerPath)}</code></td></tr>`).join('') + `</table>`
     : '<div class="empty">Không có mapping.</div>';
 }
 // countdown tick mỗi giây (client-side, không gọi API)
 setInterval(() => {
-  document.querySelectorAll('[data-reset]').forEach(e => {
-    e.textContent = fmtCountdown(Number(e.dataset.reset) - Date.now());
+  document.querySelectorAll('[data-reset],[data-wake]').forEach(e => {
+    const target = Number(e.dataset.reset || e.dataset.wake);
+    e.textContent = fmtCountdown(target - Date.now());
   });
 }, 1000);
-// SSE realtime
+// ---- router (hash screens) ----
+const screens = ['dashboard', 'session', 'accounts', 'config', 'setup'];
+let sessPoll = null;
+function route() {
+  const h = (location.hash || '#/').replace(/^#\/?/, '') || 'dashboard';
+  const s = screens.includes(h) ? h : 'dashboard';
+  screens.forEach(x => { document.getElementById('screen-' + x).hidden = x !== s; });
+  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.screen === s));
+  if (sessPoll) { clearInterval(sessPoll); sessPoll = null; }
+  if (s === 'session') { refreshSession(); sessPoll = setInterval(refreshSession, 5000); }
+  if (s === 'accounts') renderAccountsManage();
+  if (s === 'config') loadConfigForm();
+  if (s === 'setup') loadSetup();
+}
+window.addEventListener('hashchange', route);
+// ---- waiting banner ----
+async function pollWaitState() {
+  try {
+    const st = await api('/api/supervisor/state');
+    const b = document.getElementById('waitbanner');
+    if (st.phase === 'waiting' && st.wakeAt) {
+      b.hidden = false;
+      b.innerHTML = `⏳ <b>${esc(st.account || '?')}</b> reset sau <b data-wake="${st.wakeAt}">${fmtCountdown(st.wakeAt - Date.now())}</b> — tự continue ` +
+        `<button class="btn btn-danger btn-sm" id="btn-cancel-wait" style="margin-top:0">Hủy chờ</button>`;
+      document.getElementById('btn-cancel-wait').onclick = async (ev) => {
+        ev.target.disabled = true;
+        try { await apiPost('/api/wait/cancel'); b.hidden = true; }
+        catch (e) { ev.target.disabled = false; alert('Lỗi: ' + e.message); }
+      };
+    } else {
+      b.hidden = true;
+    }
+  } catch { /* giữ banner cũ khi lỗi mạng */ }
+}
+setInterval(pollWaitState, 10000);
+pollWaitState();
+// ---- rotate ----
+async function rotateNow(name, btn) {
+  const msg = document.getElementById('dashmsg');
+  if (btn) btn.disabled = true;
+  msg.className = 'msg'; msg.textContent = 'Đang gửi yêu cầu rotate…';
+  try {
+    const r = await apiPost('/api/rotate', name ? { to: name } : {});
+    msg.className = 'msg ok';
+    msg.textContent = 'Đã ghi nhận yêu cầu rotate' + (r.to ? ' → ' + r.to : '') + '.';
+    if (r.note) msg.textContent += ' ' + r.note; // hiển thị nguyên văn
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Lỗi rotate: ' + e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+// ---- session screen ----
+let sessLog = [];
+function renderSessLog() {
+  const el = document.getElementById('sesslog');
+  el.innerHTML = sessLog.slice(-200).map(l => `<div>${esc(l)}</div>`).join('');
+  el.scrollTop = el.scrollHeight;
+}
+async function refreshSession() {
+  const stEl = document.getElementById('sess-status');
+  const sel = document.getElementById('sess-account');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">(mặc định)</option>' +
+    lastAccounts.map(a => `<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  try {
+    const s = await api('/api/session/status');
+    stEl.innerHTML = s.running
+      ? `Trạng thái: <b style="color:var(--ok)">running</b> · account <b>${esc(s.account || '?')}</b> · bắt đầu ${s.startedAt ? new Date(s.startedAt).toLocaleString('vi-VN') : '?'}` +
+        (s.tail && s.tail.length ? ` · log trong bộ nhớ: ${s.tail.length} dòng` : '')
+      : 'Trạng thái: <b>stopped</b>';
+    if (s.tail && s.tail.length && !sessLog.length) { sessLog = s.tail.slice(-200); renderSessLog(); }
+  } catch (e) {
+    stEl.textContent = 'Lỗi tải trạng thái: ' + e.message;
+  }
+}
+async function startSession(account, msgEl, btn) {
+  if (btn) btn.disabled = true;
+  msgEl.className = 'msg'; msgEl.textContent = 'Đang start…';
+  try {
+    await apiPost('/api/session/start', account ? { account } : {});
+    msgEl.className = 'msg ok'; msgEl.textContent = 'Session đã start.';
+    sessLog = [];
+    if (msgEl.id === 'dashmsg') location.hash = '#/session';
+    else refreshSession();
+  } catch (e) {
+    msgEl.className = 'msg err'; msgEl.textContent = 'Lỗi start: ' + e.message;
+    if (/session-already-running/.test(e.message)) location.hash = '#/session';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+async function stopSession(msgEl, btn) {
+  if (btn) btn.disabled = true;
+  msgEl.className = 'msg'; msgEl.textContent = 'Đang stop…';
+  try {
+    await apiPost('/api/session/stop', {});
+    msgEl.className = 'msg ok'; msgEl.textContent = 'Session đã stop.';
+    refreshSession();
+  } catch (e) {
+    msgEl.className = 'msg err'; msgEl.textContent = 'Lỗi stop: ' + e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+document.getElementById('btn-start-session').onclick = (e) =>
+  startSession(null, document.getElementById('dashmsg'), e.target);
+document.getElementById('btn-sess-start').onclick = (e) =>
+  startSession(document.getElementById('sess-account').value || null, document.getElementById('sessmsg'), e.target);
+document.getElementById('btn-sess-stop').onclick = (e) =>
+  stopSession(document.getElementById('sessmsg'), e.target);
+// ---- accounts manage ----
+function renderAccountsManage() {
+  const el = document.getElementById('acc-list');
+  el.innerHTML = lastAccounts.map(a => `
+    <div class="card"><h2><span class="dot ${a.error ? 'err' : (a.containerRunning ? 'up' : 'down')}"></span>${esc(a.name)}</h2>
+      <div class="email">${esc(a.email || '')} · <code>${esc(a.container)}</code></div>
+      <div class="dim" style="margin-bottom:8px">login: <code>docker exec -it ${esc(a.container)} agy login</code></div>
+      <div class="actions">
+        <button class="btn btn-sm" onclick="verifyAccount('${esc(a.name)}', this)">✔ Verify</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteAccount('${esc(a.name)}', this)">🗑 Xóa</button>
+      </div>
+      <div class="msg" id="accmsg-${esc(a.name)}" style="margin:8px 0 0"></div>
+    </div>`).join('') || '<div class="empty">Chưa có account nào.</div>';
+}
+async function verifyAccount(name, btn) {
+  const msg = document.getElementById('accmsg-' + name);
+  btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Đang kiểm tra quota…';
+  try {
+    const r = await apiPost('/api/accounts/' + encodeURIComponent(name) + '/verify', {});
+    if (r.ok && r.quota && r.quota.buckets) {
+      msg.className = 'msg ok';
+      msg.textContent = 'OK — ' + r.quota.buckets.map(b => `${b.window}: ${Math.round(b.remainingFraction * 100)}%`).join(', ');
+    } else {
+      msg.className = 'msg err'; msg.textContent = 'Chưa login được: ' + (r.error || 'unknown');
+    }
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Lỗi: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+async function deleteAccount(name, btn) {
+  if (!confirm(`Xóa account '${name}'?`)) return;
+  const msg = document.getElementById('accmsg-' + name);
+  btn.disabled = true;
+  try {
+    await apiDelete('/api/accounts/' + encodeURIComponent(name));
+    const d = await api('/api/accounts');
+    render({ ts: Date.now(), accounts: d.accounts, config: last ? last.config : null });
+    renderAccountsManage();
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Lỗi xóa: ' + e.message;
+    btn.disabled = false;
+  }
+}
+document.getElementById('btn-acc-add').onclick = async (e) => {
+  const nameEl = document.getElementById('acc-name');
+  const emailEl = document.getElementById('acc-email');
+  const msg = document.getElementById('accmsg');
+  const btn = e.target;
+  btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Đang thêm…';
+  try {
+    await apiPost('/api/accounts', { name: nameEl.value.trim(), email: emailEl.value.trim() });
+    msg.className = 'msg ok'; msg.textContent = `Đã thêm '${nameEl.value.trim()}'.`;
+    nameEl.value = ''; emailEl.value = '';
+    const d = await api('/api/accounts');
+    render({ ts: Date.now(), accounts: d.accounts, config: last ? last.config : null });
+    renderAccountsManage();
+  } catch (err) {
+    msg.className = 'msg err'; msg.textContent = 'Lỗi: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+// ---- config form ----
+async function loadConfigForm() {
+  const msg = document.getElementById('cfgmsg');
+  try {
+    const c = await api('/api/config');
+    const r = c.rotation || {};
+    document.getElementById('cfg-order').value = (r.order || []).join(', ');
+    document.getElementById('cfg-maxrot').value = r.maxRotationsPerSession ?? '';
+    document.getElementById('cfg-cooldown').value = r.rotationCooldownSec ?? '';
+    document.getElementById('cfg-verify').value = r.verifyTimeoutSec ?? '';
+    document.getElementById('cfg-buffer').value = r.resetBufferSec ?? '';
+    document.getElementById('cfg-recheck').value = r.waitRecheckSec ?? '';
+    msg.className = 'msg'; msg.textContent = '';
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Lỗi tải config: ' + e.message;
+  }
+}
+document.getElementById('btn-cfg-save').onclick = async (e) => {
+  const msg = document.getElementById('cfgmsg');
+  const btn = e.target;
+  const num = (id) => { const v = document.getElementById(id).value.trim(); return v === '' ? undefined : Number(v); };
+  const rotation = {};
+  const order = document.getElementById('cfg-order').value.split(',').map(s => s.trim()).filter(Boolean);
+  // Always send order, even when empty: omitting it would leave the old
+  // order in place, so clearing the field could never take effect.
+  rotation.order = order;
+  const maxrot = num('cfg-maxrot'), cooldown = num('cfg-cooldown'), verify = num('cfg-verify'),
+        buffer = num('cfg-buffer'), recheck = num('cfg-recheck');
+  if (maxrot !== undefined) rotation.maxRotationsPerSession = maxrot;
+  if (cooldown !== undefined) rotation.rotationCooldownSec = cooldown;
+  if (verify !== undefined) rotation.verifyTimeoutSec = verify;
+  if (buffer !== undefined) rotation.resetBufferSec = buffer;
+  if (recheck !== undefined) rotation.waitRecheckSec = recheck;
+  btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Đang lưu…';
+  try {
+    await apiPut('/api/config', { rotation });
+    msg.className = 'msg ok'; msg.textContent = 'Đã lưu. Supervisor áp dụng ở lần rotate tiếp theo, không cần restart.';
+  } catch (err) {
+    msg.className = 'msg err'; msg.textContent = 'Lỗi: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+// ---- setup center (H2) ----
+let activeSetupTask = null; // {taskId, pollIv}
+async function loadSetup() {
+  await loadSetupSteps(false);
+  loadTailscale();
+}
+async function loadSetupSteps(fresh) {
+  const el = document.getElementById('setup-steps');
+  try {
+    const d = await api('/api/setup/steps' + (fresh ? '?fresh=1' : ''));
+    renderSetupSteps(d.steps || []);
+  } catch (e) {
+    el.innerHTML = '<div class="err">Lỗi tải checklist: ' + esc(e.message) + '</div>';
+  }
+}
+function renderSetupSteps(steps) {
+  const el = document.getElementById('setup-steps');
+  el.innerHTML = steps.map(s => `
+    <div class="card" style="margin-bottom:12px">
+      <h2><span class="dot ${s.ok ? 'up' : 'err'}"></span>${esc(s.label)}
+        <span class="tag">${s.ok ? 'OK' : 'cần xử lý'}</span>
+        ${s.runnable ? '' : '<span class="tag">chỉ kiểm tra</span>'}</h2>
+      <div class="dim">${esc(s.detail)}</div>
+      ${s.manual && s.manual.length ? `<div class="manual">${s.manual.map(m => `<div>• ${esc(m)}</div>`).join('')}</div>` : ''}
+      <div class="row">
+        ${s.runnable
+          ? `<button class="btn btn-sm" onclick="runSetupStep('${esc(s.id)}', this)">▶ Chạy</button>`
+          : '<span class="dim">Không có bước chạy tự động — làm theo hướng dẫn thủ công ở trên.</span>'}
+      </div>
+      <div id="taskprog-${esc(s.id)}" style="margin-top:8px"></div>
+    </div>`).join('') || '<div class="empty">Không có bước setup nào.</div>';
+}
+async function runSetupStep(stepId, btn) {
+  const msg = document.getElementById('setupmsg');
+  btn.disabled = true;
+  msg.className = 'msg'; msg.textContent = 'Đang chạy…';
+  try {
+    const r = await apiPost('/api/setup/' + encodeURIComponent(stepId), {});
+    watchSetupTask(r.taskId);
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Lỗi: ' + e.message;
+    btn.disabled = false;
+  }
+}
+function watchSetupTask(taskId) {
+  stopSetupTaskWatch();
+  const poll = async () => {
+    try {
+      const t = await api('/api/tasks/' + encodeURIComponent(taskId));
+      renderTaskProgress(t);
+      if (t.status === 'ok' || t.status === 'failed') {
+        stopSetupTaskWatch();
+        await loadSetupSteps(false); // refresh checklist với kết quả mới
+        const msg = document.getElementById('setupmsg');
+        const d = (t.steps[0] && t.steps[0].detail) || '';
+        msg.className = 'msg ' + (t.status === 'ok' ? 'ok' : 'err');
+        msg.textContent = t.status === 'ok' ? 'Hoàn tất.' + (d ? ' ' + d : '') : 'Thất bại: ' + d;
+      }
+    } catch { /* thử lại ở lần poll sau */ }
+  };
+  activeSetupTask = { taskId, pollIv: setInterval(poll, 1500) };
+  poll();
+}
+function stopSetupTaskWatch() {
+  if (activeSetupTask) { clearInterval(activeSetupTask.pollIv); activeSetupTask = null; }
+}
+function onTaskProgress(t) {
+  if (activeSetupTask && t.id === activeSetupTask.taskId) renderTaskProgress(t);
+}
+function renderTaskProgress(t) {
+  const step = (t.steps && t.steps[0]) || {};
+  const el = document.getElementById('taskprog-' + step.id);
+  if (!el) return;
+  const cls = step.status === 'ok' ? 'ok' : step.status === 'failed' ? 'err' : '';
+  el.innerHTML = `<span class="msg ${cls}">${esc(step.status)}${step.detail ? ': ' + esc(step.detail) : ''}</span>` +
+    (step.status === 'running' ? '<div class="bar" style="margin-top:6px"><i class="pulse"></i></div>' : '');
+}
+document.getElementById('btn-setup-recheck').onclick = async (e) => {
+  // fresh=1: bỏ qua cache dockerAvailable() — Docker cài trong lúc hub đang
+  // chạy vẫn được phát hiện mà không cần restart hub.
+  e.target.disabled = true;
+  try { await loadSetupSteps(true); }
+  finally { e.target.disabled = false; }
+};
+async function loadTailscale() {
+  const el = document.getElementById('tailscale');
+  const port = location.port || '8765';
+  try {
+    const t = await api('/api/tailscale');
+    const url = `http://${t.ip || '<tailnet-ip>'}:${port}/?token=` + encodeURIComponent(token);
+    el.innerHTML = `
+      <div class="dim" style="margin-bottom:8px">Trạng thái: ${
+        t.installed
+          ? (t.connected
+              ? `đã cài, đã kết nối${t.ip ? ` (<code>${esc(t.ip)}</code>)` : ''}`
+              : 'đã cài, chưa kết nối — chạy <code>tailscale up</code>')
+          : 'chưa cài đặt'}</div>
+      <ol class="dim">
+        <li>Cài Tailscale trên máy này và điện thoại, đăng nhập cùng tài khoản: <code>https://tailscale.com/download</code></li>
+        <li>Trên máy này chạy <code>tailscale up</code>, kiểm tra IP bằng <code>tailscale ip -4</code>.</li>
+        <li>Mở trên điện thoại: <code>${esc(url)}</code></li>
+      </ol>
+      <p class="dim">Hub vẫn chỉ bind <code>127.0.0.1</code> — truy cập qua tailnet đã xác thực, không expose ra internet. Token nằm sẵn trong URL (cơ chế <code>?token=</code> hiện có, không lưu thêm ở đâu).</p>`;
+  } catch (e) {
+    el.innerHTML = '<div class="err">Không kiểm tra được Tailscale: ' + esc(e.message) + '</div>';
+  }
+}
+// ---- SSE realtime ----
 try {
   const es = new EventSource('/api/events?token=' + encodeURIComponent(token));
   es.addEventListener('snapshot', e => { render(JSON.parse(e.data)); document.getElementById('conn').textContent = 'realtime · SSE'; });
+  es.addEventListener('session-log', e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.line !== undefined) {
+        sessLog.push(d.line);
+        if (sessLog.length > 200) sessLog.splice(0, sessLog.length - 200);
+        if (!document.getElementById('screen-session').hidden) renderSessLog();
+      }
+    } catch { /* bỏ qua dòng lỗi */ }
+  });
+  es.addEventListener('task-progress', e => {
+    try { onTaskProgress(JSON.parse(e.data)); } catch { /* bỏ qua */ }
+  });
   es.onerror = () => { document.getElementById('conn').textContent = 'mất kết nối SSE, đang thử lại…'; };
 } catch { document.getElementById('conn').textContent = 'SSE không khả dụng'; }
 // fallback lần đầu nếu SSE chậm
 api('/api/accounts').then(d => { if (!last) render({ ts: Date.now(), accounts: d.accounts, config: null }); })
   .catch(() => { document.getElementById('conn').textContent = 'lỗi xác thực — kiểm tra token trên URL'; });
 api('/api/config').then(c => { if (last) { last.config = c; render(last); } }).catch(()=>{});
+route();
 </script>
 </body>
 </html>

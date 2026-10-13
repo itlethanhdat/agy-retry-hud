@@ -16,6 +16,7 @@
   },
   "retry": {
     "enabled": true,
+    "policy": "wait",
     "stopWhenWeeklyExhausted": true,
     "weeklyRemainingThreshold": 0.01,
     "autoDisarmIncidentOnSuccess": true,
