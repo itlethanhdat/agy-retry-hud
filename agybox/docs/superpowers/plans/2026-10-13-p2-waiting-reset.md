@@ -4,6 +4,13 @@
 
 **Goal:** When all accounts are quota-exhausted, the supervisor automatically switches to the account with the nearest reset time, waits until reset, verifies quota, and resumes the session — no manual watching.
 
+> **Monorepo layout (post PR #5):** agybox now lives at `agybox/` inside the
+> `agy-retry-hud` repo. All paths in this plan are relative to `agybox/`
+> unless stated otherwise. Run tests from `agybox/` (`cd agybox && npm test`).
+> The standalone `~/workspace/agybox` repo is legacy — do not implement there.
+> All `Run:` commands below assume cwd is `agybox/`; `git add` paths are
+> relative to `agybox/` too.
+
 **Architecture:** Extend the P1 `rotateOnce` flow: on `{exhausted:true}`, `agybox run` calls the new `enterWaitingReset` (in `lib/supervisor.js`) instead of exiting. It gathers per-account quotas, picks the nearest reset (5h bucket preferred, then weekly), holds that account's lock, writes a state file, sleeps until `resetAt + resetBufferSec` while polling a cancel flag, then re-verifies (never trusting the timer alone — machine sleep) and respawns via the existing `spawnFor`/`--resume` path with handoff-inject fallback. All time and cancel-check seams are injectable for unit tests; the e2e uses the fake-docker helper with a quota-ok marker file.
 
 **Tech Stack:** Node.js ≥ 18, ESM, zero runtime dependencies. Tests: `node --test test/*.test.js`.
@@ -19,7 +26,12 @@
 - Never log or persist token material; handoffs keep the Task-2 (P1) no-token invariant.
 - Time is always injectable: no raw `Date.now()`/`setTimeout` in orchestration logic — take a `clock = {now(), sleep(ms)}` param defaulting to real timers.
 - Never push to GitHub or merge without the human partner's explicit approval.
-- Work happens in an isolated worktree created via superpowers:using-git-worktrees at execution time; baseline is the P1 merge (branch `feat/p1-supervisor-auto-rotate` merged to master, or master HEAD if the human kept it as-is — confirm at execution).
+- Work happens in the `agy-retry-hud` repo worktree `.worktrees/feat-agybox-p2`
+  (branch `feat/agybox-p2-waiting-reset`), forked from `origin/main` @ `cbb7826`
+  (PR #5 merged). The standalone `~/workspace/agybox` repo is legacy.
+- Also respect `agy-retry-hud/AGENTS.md`: never commit runtime state,
+  credentials, raw transcripts, or user config; label synthetic fixtures and
+  never claim live AGY/OS verification from offline tests.
 
 ## Review Focus
 
@@ -31,7 +43,7 @@
 
 ---
 
-## File Structure
+## File Structure (paths relative to `agybox/`)
 
 - Create: `lib/wait.js` — `pickNearestResetAccount(accounts, quotas)` (Task 1).
 - Create: `lib/wait.js` (same file) — `waitUntilWake({wakeAt, cancelFile, pollMs, onTick, clock})` (Task 2).

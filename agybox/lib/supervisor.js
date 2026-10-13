@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildHandoff, writeHandoff } from './handoff.js';
 import { nextRotationAllowed } from './rotate.js';
+import { pickNearestResetAccount, waitUntilWake } from './wait.js';
 
 export class SupervisedSession {
   constructor({ spawnFn = defaultSpawn } = {}) {
@@ -142,28 +143,115 @@ export async function rotateOnce({ session, activeAccount, accounts = [], getQuo
     if (!qv.ok) continue;
     const qb = (qv.value?.buckets || []).find(b => b.window === '5h');
     if (!qb || qb.remainingFraction <= 0) continue;
-    let newSession;
-    try {
-      newSession = spawnFor(acc, ['--resume', handoff.sessionId]);
-    } catch { continue; }
-    let resumeMode = 'native';
-    const early = await waitForSettled(newSession, policy.resumeGraceMs ?? 3000);
-    if (early && early.code !== 0) {
-      try {
-        newSession = spawnFor(acc, []);
-        newSession.write(handoffMessage(handoff) + '\n');
-        resumeMode = 'handoff-inject';
-      } catch { continue; }
-    }
-    chosen = { acc, newSession, resumeMode };
+    const attempt = await trySpawnCandidate(spawnFor, acc, handoff, handoffDir, policy);
+    if (!attempt) continue;
+    chosen = { acc, ...attempt };
     break;
   }
   if (!chosen) return { exhausted: true };
 
   rotState.rotationsThisSession = (rotState.rotationsThisSession || 0) + 1;
   rotState.lastRotationAt = now;
-  writeHandoff(handoffDir, { ...handoff, resumeMode: chosen.resumeMode });
+  // handoff already re-written with resumeMode by trySpawnCandidate
   return { to: chosen.acc.name, resumeMode: chosen.resumeMode, sessionId: handoff.sessionId, session: chosen.newSession };
+}
+
+/**
+ * trySpawnCandidate(spawnFor, account, handoff, handoffDir, policy) =>
+ *   {newSession, resumeMode} | null
+ * Shared by rotateOnce and enterWaitingReset: native `--resume` first,
+ * handoff-inject fallback when the resume exits non-zero. Null when the
+ * candidate cannot be started at all (caller tries the next one).
+ */
+async function trySpawnCandidate(spawnFor, acc, handoff, handoffDir, policy) {
+  let newSession;
+  try {
+    newSession = spawnFor(acc, ['--resume', handoff.sessionId]);
+  } catch { return null; }
+  let resumeMode = 'native';
+  const early = await waitForSettled(newSession, policy.resumeGraceMs ?? 3000);
+  if (early && early.code !== 0) {
+    try {
+      newSession = spawnFor(acc, []);
+      newSession.write(handoffMessage(handoff) + '\n');
+      resumeMode = 'handoff-inject';
+    } catch { return null; }
+  }
+  if (handoffDir) writeHandoff(handoffDir, { ...handoff, resumeMode });
+  return { newSession, resumeMode };
+}
+
+function writeStateFile(stateFile, state) {
+  if (!stateFile) return;
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  const tmp = `${stateFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ ...state, updatedAt: Date.now() }));
+  fs.renameSync(tmp, stateFile);
+}
+
+/**
+ * enterWaitingReset({accounts, getQuota, policy, rotState, handoffDir,
+ *   spawnFor, stateFile, cancelFile, onTick, clock, now})
+ * => {resumed:true, account, session, resumeMode} | {cancelled:true} | {givenUp:true}
+ *
+ * P2: all accounts exhausted → pick nearest reset, hold on (state file for
+ * observability), sleep until resetAt + buffer, then RE-VERIFY quota (never
+ * trust the timer — the machine may have slept) and respawn. Still exhausted
+ * → recompute, up to maxWaitCycles.
+ */
+export async function enterWaitingReset({ accounts = [], getQuota, policy = {}, rotState = {},
+  handoffDir, spawnFor, stateFile, cancelFile, onTick, onPick, clock, now = Date.now() }) {
+  const verifyMs = (policy.verifyTimeoutSec ?? 20) * 1000;
+  const recheckMs = (policy.waitRecheckSec ?? 300) * 1000;
+  const bufferMs = (policy.resetBufferSec ?? 90) * 1000;
+  const maxCycles = policy.maxWaitCycles ?? 5;
+  const clk = clock || { now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)) };
+
+  const gather = async () => {
+    const quotas = new Map();
+    for (const a of accounts) {
+      const qv = await withTimeout(getQuota(a.name), verifyMs);
+      if (qv.ok && qv.value && !qv.value.error) quotas.set(a.name, qv.value);
+    }
+    return quotas;
+  };
+
+  for (let cycle = 0; cycle < maxCycles; cycle++) {
+    let quotas = await gather();
+    let pick = pickNearestResetAccount(accounts, quotas);
+    for (let r = 0; r < 3 && !pick; r++) {
+      await clk.sleep(recheckMs);
+      quotas = await gather();
+      pick = pickNearestResetAccount(accounts, quotas);
+    }
+    if (!pick) return { givenUp: true };
+
+    const wakeAt = pick.resetAt + bufferMs;
+    writeStateFile(stateFile, { phase: 'waiting', account: pick.account.name, window: pick.window, wakeAt });
+    onPick?.({ account: pick.account.name, window: pick.window, wakeAt });
+    const w = await waitUntilWake({ wakeAt, cancelFile, pollMs: 5000, onTick, clock: clk });
+    if (w.cancelled) return { cancelled: true };
+
+    // Post-wake re-verify: the timer may have drifted (sleep/hibernate) or
+    // the reset may have moved — only confirmed quota resumes the session.
+    const qv = await withTimeout(getQuota(pick.account.name), verifyMs);
+    const qb = qv.ok ? (qv.value?.buckets || []).find(b => b.window === '5h') : null;
+    if (qb && qb.remainingFraction > 0) {
+      const handoff = buildHandoff({
+        sessionId: rotState.sessionId || '', fromAccount: pick.account.name,
+        cwd: rotState.cwd || '', gitHead: rotState.gitHead || '', gitDirty: rotState.gitDirty || [],
+        summary: rotState.summary || '', pendingTodos: rotState.pendingTodos || [],
+        interruptedTool: rotState.interruptedTool || null, now,
+      });
+      const attempt = await trySpawnCandidate(spawnFor, pick.account, handoff, handoffDir, policy);
+      if (attempt) {
+        writeStateFile(stateFile, { phase: 'active', account: pick.account.name });
+        return { resumed: true, account: pick.account.name, session: attempt.newSession, resumeMode: attempt.resumeMode };
+      }
+    }
+    // still exhausted (or spawn failed) → loop recomputes the nearest reset
+  }
+  return { givenUp: true };
 }
 
 /**
