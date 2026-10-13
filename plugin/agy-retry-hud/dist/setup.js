@@ -5,7 +5,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {DEFAULT_CONTROL_CONFIG,controlConfigPath,loadControlConfig,saveControlConfig} from './control.js';
-import {daemonStatus,ensureDaemon} from './daemon.js';
+import {daemonStatus,ensureDaemon,restartDaemonSync} from './daemon.js';
 import {nativeRoot} from './native.js';
 
 function q(p){return '"'+String(p).replace(/"/g,'\\"')+'"';}
@@ -70,13 +70,25 @@ export function createCtlLauncher({home=os.homedir(),env=process.env,platform=pr
  fs.mkdirSync(path.dirname(target),{recursive:true});if(platform==='win32')fs.writeFileSync(target,`@echo off\r\nnode "${entry}" %*\r\n`,'utf8');else{fs.writeFileSync(target,`#!/bin/sh\n# agy-retry-hud launcher\nexec node ${q(entry)} "$@"\n`,'utf8');fs.chmodSync(target,0o755);}return {launcher:target,created:true};
 }
 export function installAndWire({sourceDir,home=os.homedir(),env=process.env,agy='agy',force=false,validate=true,platform=process.platform}={}){
- sourceDir=resolveInstallSourceDir({sourceDir});const childEnv={...env,HOME:home,USERPROFILE:home};if(validate)runAgy(['plugin','validate',sourceDir],{agy,cwd:sourceDir,env:childEnv});runAgy(['plugin','install',sourceDir],{agy,cwd:sourceDir,env:childEnv});
+ sourceDir=resolveInstallSourceDir({sourceDir});const childEnv={...env,HOME:home,USERPROFILE:home};
+ // A reinstall must replace the running daemon: the old process keeps executing
+ // the previous on-disk code (same-version fixes are invisible to version-drift
+ // detection), so without a restart the update silently never takes effect.
+ const root=nativeRoot({platform,home,env:childEnv});
+ const previouslyInstalled=!!locateInstalledPlugin({home,env:childEnv,platform});
+ const daemonWasAlive=previouslyInstalled&&daemonStatus({root}).processAlive;
+ if(validate)runAgy(['plugin','validate',sourceDir],{agy,cwd:sourceDir,env:childEnv});runAgy(['plugin','install',sourceDir],{agy,cwd:sourceDir,env:childEnv});
  const paths=setupPaths({home,env:childEnv,platform}),pluginDir=locateInstalledPlugin({home,env:childEnv,platform});
  if(!pluginDir)throw Error(`agy plugin install completed but no valid agy-retry-hud installation was found. Checked shared config: ${paths.sharedPlugin} and CLI-private path: ${paths.cliPlugin}.`);
  const setupSkill=path.join(pluginDir,'skills','setup','SKILL.md');if(!fs.existsSync(setupSkill))throw Error('installed plugin is missing skills/setup/SKILL.md; reinstall the current package');
  const hook=wireNativeHooks({pluginDir,platform}),wired=wireStatusLine({home,env:childEnv,pluginDir,force,platform}),launcher=createCtlLauncher({home,env:childEnv,platform,pluginDir});
  const cfgFile=controlConfigPath({home,env:childEnv,platform}),cfg=loadControlConfig({file:cfgFile,env:childEnv});saveControlConfig(cfg,{file:cfgFile});
- return {...wired,...launcher,hook,skillsDiscoverable:true,configMigrated:true,daemonAutoStart:cfg.daemon?.enabled!==false&&cfg.daemon?.autoStart!==false};
+ let daemonRestart=null;
+ if(daemonWasAlive&&cfg.daemon?.enabled!==false&&cfg.daemon?.autoStart!==false&&childEnv.AGY_RETRY_SKIP_DAEMON!=='1'&&!process.env.NODE_TEST_CONTEXT){
+  try{daemonRestart=restartDaemonSync({root,config:cfg,env:childEnv});}
+  catch(e){daemonRestart={restarted:false,error:e?.message||String(e)};}
+ }
+ return {...wired,...launcher,hook,skillsDiscoverable:true,configMigrated:true,daemonAutoStart:cfg.daemon?.enabled!==false&&cfg.daemon?.autoStart!==false,daemonRestart};
 }
 function hookReady(pluginDir){
  if(!pluginDir)return false;try{const hooks=readJSON(path.join(pluginDir,'hooks.json'),{}),group=hooks?.['agy-retry-auto-retry'],stop=group?.Stop?.[0],pre=group?.PreInvocation?.[0];return stop?.type==='command'&&pre?.type==='command'&&commandReferencesPlugin(stop.command)&&commandReferencesPlugin(pre.command);}catch{return false;}
