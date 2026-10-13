@@ -180,3 +180,89 @@ test('getGitInfo returns empty for non-repo', async () => {
   const { getGitInfo } = await import('../lib/supervisor.js');
   assert.deepEqual(getGitInfo('/nonexistent-dir-xyz-agybox'), { gitHead: '', gitDirty: [] });
 });
+
+// ---- enterWaitingReset (P2) ----
+
+test('enterWaitingReset resumes after wake when quota returns', async () => {
+  const { enterWaitingReset } = await import('../lib/supervisor.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wr-'));
+  let t = 0; const clock = { now: () => t, sleep: async ms => { t += ms; } };
+  let quotaCalls = 0;
+  const getQuota = async () => (++quotaCalls === 1
+    ? { buckets: [{ window: '5h', remainingFraction: 0, resetAt: 1000 }] }
+    : { buckets: [{ window: '5h', remainingFraction: 0.6, resetAt: 99999 }] });
+  const spawned = [];
+  let sawWaiting = false;
+  const r = await enterWaitingReset({
+    accounts: [{ name: 'a', container: 'agy-a' }], getQuota,
+    policy: { verifyTimeoutSec: 1, resetBufferSec: 0, waitRecheckSec: 1, maxWaitCycles: 3, resumeGraceMs: 50 },
+    rotState: { sessionId: 's-wait' }, handoffDir: dir,
+    spawnFor: (a, args) => { spawned.push(args); return fakeSession(); },
+    stateFile: path.join(dir, 'state.json'), cancelFile: path.join(dir, 'cancel'),
+    onTick: () => {
+      try {
+        const st = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8'));
+        if (st.phase === 'waiting' && st.account === 'a') sawWaiting = true;
+      } catch {}
+    },
+    clock, now: 0 });
+  assert.equal(r.resumed, true); assert.equal(r.account, 'a');
+  assert.deepEqual(spawned[0], ['--resume', 's-wait']);
+  assert.ok(sawWaiting, 'state file must show waiting during the wait');
+  const st = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8'));
+  assert.equal(st.phase, 'active');
+});
+
+test('enterWaitingReset gives up when reset is never known', async () => {
+  const { enterWaitingReset } = await import('../lib/supervisor.js');
+  let t = 0; const clock = { now: () => t, sleep: async ms => { t += ms; } };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wr-'));
+  let spawned = 0;
+  const r = await enterWaitingReset({
+    accounts: [{ name: 'a' }], getQuota: async () => ({ error: 'x' }),
+    policy: { verifyTimeoutSec: 1, waitRecheckSec: 1, maxWaitCycles: 2, resumeGraceMs: 50 },
+    rotState: {}, handoffDir: dir,
+    spawnFor: () => { spawned++; return fakeSession(); },
+    stateFile: path.join(dir, 's.json'), cancelFile: '/nonexistent-xyz-agybox',
+    clock, now: 0 });
+  assert.deepEqual(r, { givenUp: true });
+  assert.equal(spawned, 0);
+});
+
+test('enterWaitingReset re-verifies quota after a clock jump past wakeAt', async () => {
+  const { enterWaitingReset } = await import('../lib/supervisor.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wr-'));
+  let t = 0;
+  const clock = { now: () => t, sleep: async ms => { t += ms + 3600000; } }; // jump 1h per sleep
+  let verified = 0;
+  const getQuota = async () => (++verified === 1
+    ? { buckets: [{ window: '5h', remainingFraction: 0, resetAt: 1000 }] }
+    : { buckets: [{ window: '5h', remainingFraction: 0.4, resetAt: 99999 }] });
+  const r = await enterWaitingReset({
+    accounts: [{ name: 'a' }], getQuota,
+    policy: { verifyTimeoutSec: 1, resetBufferSec: 0, waitRecheckSec: 1, maxWaitCycles: 3, resumeGraceMs: 50 },
+    rotState: { sessionId: 's-jump' }, handoffDir: dir,
+    spawnFor: () => fakeSession(),
+    stateFile: path.join(dir, 's.json'), cancelFile: '/nonexistent-xyz-agybox',
+    clock, now: 0 });
+  assert.equal(r.resumed, true);
+  assert.ok(verified >= 2, 'must re-verify after wake even when the timer was jumped');
+});
+
+test('enterWaitingReset calls onPick when starting to wait', async () => {
+  const { enterWaitingReset } = await import('../lib/supervisor.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wr-'));
+  let t = 0; const clock = { now: () => t, sleep: async ms => { t += ms; } };
+  const picks = [];
+  const getQuota = async () => ({ buckets: [{ window: '5h', remainingFraction: 0.6, resetAt: 99999 }] });
+  const r = await enterWaitingReset({
+    accounts: [{ name: 'a' }], getQuota,
+    policy: { verifyTimeoutSec: 1, resetBufferSec: 0, waitRecheckSec: 1, maxWaitCycles: 3, resumeGraceMs: 50 },
+    rotState: { sessionId: 's-pick' }, handoffDir: dir,
+    spawnFor: () => fakeSession(),
+    stateFile: path.join(dir, 's.json'), cancelFile: '/nonexistent-xyz-agybox',
+    onPick: (p) => picks.push(p), clock, now: 0 });
+  assert.equal(r.resumed, true);
+  assert.equal(picks.length, 1);
+  assert.equal(picks[0].account, 'a');
+});

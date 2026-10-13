@@ -9,7 +9,7 @@ import { fmtCountdown } from '../lib/quota.js';
 import { matchQuotaSignal } from '../lib/signals.js';
 import { selectNextAccount } from '../lib/rotate.js';
 import { summarizeTranscript } from '../lib/handoff.js';
-import { SupervisedSession, rotateOnce, acquireLock, releaseLock, getGitInfo } from '../lib/supervisor.js';
+import { SupervisedSession, rotateOnce, acquireLock, releaseLock, getGitInfo, enterWaitingReset } from '../lib/supervisor.js';
 import { startHub } from '../hub/server.js';
 
 const [, , cmd, ...args] = process.argv;
@@ -25,6 +25,7 @@ Usage:
   agybox workspaces              list workspace folder mappings
   agybox run [--account NAME]    start a supervised agy session (auto-rotate on quota)
   agybox rotate [NAME]          set preferred account for the next supervised run
+  agybox cancel-wait             stop a supervisor that is waiting for quota reset
   agybox hub [--port N] [--open]  start the web management UI
   agybox help                    this help
 `);
@@ -86,10 +87,22 @@ async function cmdRun(runArgs) {
   const policy = cfg.rotation;
   const rotState = { rotationsThisSession: 0, lastRotationAt: 0, sessionId: `sess-${Date.now()}`, notBefore: new Map() };
   const handoffDir = path.join(root, 'handoffs');
+  const stateFile = path.join(root, 'supervisor-state.json');
+  const cancelFile = path.join(root, 'cancel-wait');
   const transcript = [];
   const spawnFor = (account, agyArgs) => spawnAgySession(account, agyArgs);
+  // Supervisor decisions need truth, not cache: the accounts quota cache
+  // (60s TTL) would serve stale data exactly when it matters — right after a
+  // quota signal and right after waking from WAITING_RESET.
+  const freshQuota = n => refreshAccountQuota(n, { force: true });
   let active = acc, current = spawnFor(acc, []);
   let lockedName = acc.name, rotating = false, rotationInFlight = false;
+
+  function writeIdleState() {
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify({ phase: 'idle', updatedAt: Date.now() }));
+    } catch {}
+  }
 
   function watch(sess) {
     let done = false;
@@ -125,16 +138,23 @@ async function cmdRun(runArgs) {
     try {
       r = await rotateOnce({
         session: current, activeAccount: active, accounts,
-        getQuota: n => refreshAccountQuota(n), policy, rotState,
+        getQuota: freshQuota, policy, rotState,
         handoffDir, now, spawnFor,
       });
     } finally {
       rotationInFlight = false;
     }
     if (r.exhausted) {
-      console.log('Tất cả account đều hết quota (P1: chờ tay, P2 sẽ tự chờ reset).');
-      releaseLock(root, lockedName);
-      process.exit(3);
+      // P2: all accounts exhausted → wait for the nearest reset instead of
+      // exiting. The lock follows the account being waited on (Review Focus 5).
+      rotationInFlight = true;
+      try {
+        await runWaitingFlow(); // exits the process on cancelled/givenUp; resumes otherwise
+      } finally {
+        rotationInFlight = false;
+      }
+      watch(current); // rotationInFlight === false: genuine exits now terminate
+      return;
     }
     if (r.to) {
       // flap detection: the account we just left burned its verified quota
@@ -154,9 +174,52 @@ async function cmdRun(runArgs) {
       watch(current);
     }
   }
+  // P2 waiting flow: stop the exhausted session, wait for the nearest
+  // reset, then resume. Exits the process on cancelled/givenUp; on resume it
+  // reassigns active/current and returns (caller re-attaches the watcher).
+  async function runWaitingFlow() {
+    console.log('Tất cả account đều hết quota — dừng session, chờ reset gần nhất…');
+    try { await current.gracefulStop(); } catch {} // teardown exit ignored via rotationInFlight
+    try { fs.unlinkSync(cancelFile); } catch {} // clear stale cancel flag (Review Focus 3)
+    let lastTick = 0;
+    const wr = await enterWaitingReset({
+      accounts, getQuota: freshQuota, policy, rotState,
+      handoffDir, spawnFor, stateFile, cancelFile,
+      onTick: (ms) => {
+        if (Date.now() - lastTick < 30000) return;
+        lastTick = Date.now();
+        let acct = '?';
+        try { acct = JSON.parse(fs.readFileSync(stateFile, 'utf8')).account || '?'; } catch {}
+        console.log(`⏳ chờ '${acct}' reset sau ${fmtCountdown(ms)} — gõ \`agybox cancel-wait\` để dừng`);
+      },
+      onPick: ({ account }) => {
+        if (account === lockedName) return;
+        releaseLock(root, lockedName);
+        const lk = acquireLock(root, account);
+        if (!lk.ok) throw new Error(`không giữ được lock '${account}' khi chờ (pid ${lk.pid})`);
+        lockedName = account;
+      },
+    });
+    if (wr.cancelled) {
+      writeIdleState();
+      console.log('Đã hủy chờ reset.');
+      releaseLock(root, lockedName);
+      process.exit(0);
+    }
+    if (wr.givenUp) {
+      writeIdleState();
+      console.log('Không xác định được thời gian reset — dừng chờ. Kiểm tra `agybox status` rồi thử lại.');
+      releaseLock(root, lockedName);
+      process.exit(3);
+    }
+    console.log(`✓ '${wr.account}' đã có quota sau reset — tiếp tục session (resume: ${wr.resumeMode})`);
+    active = getAccount(wr.account);
+    current = wr.session;
+    transcript.length = 0;
+  }
   watch(current);
   console.log(`supervised session on '${acc.name}' (${acc.container}); Ctrl-C to stop`);
-  process.on('SIGINT', async () => { try { await current.gracefulStop(); } catch {} releaseLock(root, lockedName); process.exit(0); });
+  process.on('SIGINT', async () => { try { await current.gracefulStop(); } catch {} writeIdleState(); releaseLock(root, lockedName); process.exit(0); });
   await new Promise(() => {}); // run until the session exits or SIGINT
 }
 
@@ -212,6 +275,18 @@ async function main() {
       }
       case 'run': await cmdRun(args); break;
       case 'rotate': cmdRotate(args); break;
+      case 'cancel-wait': {
+        // Signal a waiting supervisor (see runWaitingFlow) to stop waiting.
+        // The supervisor polls this file and consumes it.
+        const root = sandboxRoot();
+        let waiting = false;
+        try {
+          waiting = JSON.parse(fs.readFileSync(path.join(root, 'supervisor-state.json'), 'utf8'))?.phase === 'waiting';
+        } catch {}
+        fs.writeFileSync(path.join(root, 'cancel-wait'), '');
+        console.log(waiting ? 'Đã gửi yêu cầu hủy chờ.' : 'Không có phiên nào đang chờ (đã tạo flag hủy dự phòng).');
+        break;
+      }
       case 'hub': {
         let port = 8765, open = false;
         for (let i = 0; i < args.length; i++) {
