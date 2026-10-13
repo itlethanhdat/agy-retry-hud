@@ -359,6 +359,7 @@ Default policy:
 {
   "retry": {
     "enabled": true,
+    "policy": "wait",
     "stopWhenWeeklyExhausted": true,
     "weeklyRemainingThreshold": 0.01
   },
@@ -374,6 +375,12 @@ Default policy:
   }
 }
 ```
+
+`retry.policy` chọn cách xử lý khi hết 5h quota: `"wait"` (mặc định, giữ nguyên
+hành vi cũ — lên lịch retry ở thời điểm reset) hoặc `"rotate"` (báo cho
+agybox supervisor xoay sang account khác qua rotate-request; xem
+`agybox/DESIGN-rotation.md`). Giá trị không hợp lệ được chuẩn hoá về `"wait"`
+khi load.
 
 ## Security model
 
