@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {ensureDaemon,stopDaemon,daemonStatus,nextPollMs,runDaemon,scheduleDaemonHandoffs} from '../src/daemon.js';
+import {spawn} from 'node:child_process';
+import {ensureDaemon,stopDaemon,daemonStatus,nextPollMs,runDaemon,scheduleDaemonHandoffs,daemonReuseDecision,stopDaemonSync,restartDaemonSync,daemonPaths,pidAlive,pidIsDaemonProcess} from '../src/daemon.js';
+import {PKG_VERSION} from '../src/version.js';
 import {DEFAULT_CONTROL_CONFIG,saveControlConfig} from '../src/control.js';
 import {saveNative,loadNative,mergeStatusline} from '../src/native.js';
 
@@ -24,6 +26,101 @@ test('daemon polling is adaptive and remains conservative for many sessions',()=
  assert.equal(nextPollMs([{status:'WAIT_BACKOFF',nextRetryAt:now+600000}],c,now),5000);
  assert.equal(nextPollMs([{status:'WAIT_QUOTA',nextRetryAt:now+30000}],c,now),1000);
  assert.equal(nextPollMs(Array.from({length:20},()=>({status:'IDLE'})),c,now),10000);
+});
+
+test('daemon reuse decision rejects stale heartbeats, version drift and dead pids',()=>{
+ const now=Date.now(),healthy={processAlive:true,running:true,startedAt:now-1000,heartbeatAgeMs:1000,version:PKG_VERSION};
+ assert.deepEqual(daemonReuseDecision(healthy,{now}),{reuse:true});
+ assert.deepEqual(daemonReuseDecision({...healthy,running:false,heartbeatAgeMs:120000,startedAt:now-120000},{now}),{reuse:false,reason:'stale_heartbeat'});
+ assert.deepEqual(daemonReuseDecision({...healthy,running:false,heartbeatAgeMs:null,startedAt:now-1000},{now}),{reuse:true},'startup grace covers a just-spawned daemon before its first heartbeat');
+ assert.deepEqual(daemonReuseDecision({...healthy,version:'0.5.0'},{now}),{reuse:false,reason:'version_mismatch'});
+ assert.deepEqual(daemonReuseDecision({...healthy,version:undefined},{now}),{reuse:false,reason:'version_mismatch'});
+ assert.deepEqual(daemonReuseDecision({processAlive:false},{now}),{reuse:false,reason:'not_running'});
+});
+
+test('stopDaemonSync terminates a stuck daemon process without async plumbing',()=>{
+ const base=temp(),root=path.join(base,'native'),p=daemonPaths({root});
+ fs.mkdirSync(p.dir,{recursive:true});
+ const impostor=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});impostor.unref();
+ fs.writeFileSync(p.pid,JSON.stringify({pid:impostor.pid,startedAt:Date.now(),version:PKG_VERSION}));
+ const out=stopDaemonSync({root});
+ assert.equal(out.stopped,true);
+ assert.equal(pidAlive(impostor.pid),false);
+ assert.equal(fs.existsSync(p.pid),false,'pid file is cleared after the process dies');
+});
+
+test('ensureDaemon replaces a live daemon running stale code',async()=>{
+ const base=temp(),root=path.join(base,'native'),config=JSON.parse(JSON.stringify(DEFAULT_CONTROL_CONFIG));
+ const p=daemonPaths({root});fs.mkdirSync(p.dir,{recursive:true});
+ const fakeDaemon=path.join(base,'fake-daemon.js');fs.writeFileSync(fakeDaemon,'setInterval(()=>{},1000);');
+ const impostor=spawn(process.execPath,[fakeDaemon],{detached:true,stdio:'ignore'});impostor.unref();
+ fs.writeFileSync(p.pid,JSON.stringify({pid:impostor.pid,startedAt:Date.now()-120000,version:'0.0.0-stale'}));
+ fs.writeFileSync(p.runtime,JSON.stringify({heartbeatAt:Date.now()}));
+ const out=ensureDaemon({root,config});
+ assert.equal(out.started,true);
+ assert.equal(out.replaced,'version_mismatch');
+ assert.equal(pidAlive(impostor.pid),false,'stale daemon process is terminated before the replacement starts');
+ const live=await waitFor(()=>{const s=daemonStatus({root});return s.running&&s.version===PKG_VERSION?s:null;});
+ assert.ok(live,'replacement daemon heartbeats with the current code version');
+ const stopped=await stopDaemon({root});assert.equal(stopped.stopped,true);
+});
+
+test('pidIsDaemonProcess only matches processes launched from a daemon.js entry',()=>{
+ const fakeDaemon=path.join(temp(),'probe-daemon.js');fs.writeFileSync(fakeDaemon,'setInterval(()=>{},10000);');
+ const daemonLike=spawn(process.execPath,[fakeDaemon],{detached:true,stdio:'ignore'});daemonLike.unref();
+ const foreign=spawn(process.execPath,['-e','setInterval(()=>{},10000)'],{detached:true,stdio:'ignore'});foreign.unref();
+ try{
+  assert.equal(pidIsDaemonProcess(daemonLike.pid),true);
+  assert.equal(pidIsDaemonProcess(foreign.pid),false);
+  assert.equal(pidIsDaemonProcess(0),false);
+  assert.equal(pidIsDaemonProcess(2147483647),null,'unknown pid is unverifiable, never assumed foreign-or-ours');
+ }finally{
+  try{process.kill(daemonLike.pid,'SIGKILL');}catch{}
+  try{process.kill(foreign.pid,'SIGKILL');}catch{}
+ }
+});
+
+test('ensureDaemon never signals a foreign process holding a recycled pid',async()=>{
+ const base=temp(),root=path.join(base,'native'),config=JSON.parse(JSON.stringify(DEFAULT_CONTROL_CONFIG));
+ const p=daemonPaths({root});fs.mkdirSync(p.dir,{recursive:true});
+ const foreign=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});foreign.unref();
+ fs.writeFileSync(p.pid,JSON.stringify({pid:foreign.pid,startedAt:Date.now()-120000,version:'0.0.0-stale'}));
+ fs.writeFileSync(p.runtime,JSON.stringify({heartbeatAt:Date.now()}));
+ const out=ensureDaemon({root,config});
+ assert.equal(out.started,true);
+ assert.equal(out.replaced,'version_mismatch');
+ assert.equal(pidAlive(foreign.pid),true,'foreign process must survive the self-healing path untouched');
+ const live=await waitFor(()=>{const s=daemonStatus({root});return s.running?s:null;});
+ assert.ok(live,'a fresh daemon still starts after the stale pid file is dropped');
+ try{process.kill(foreign.pid,'SIGKILL');}catch{}
+ const stopped=await stopDaemon({root});assert.equal(stopped.stopped,true);
+});
+
+test('restartDaemonSync unconditionally replaces the registered daemon',async()=>{
+ const base=temp(),root=path.join(base,'native'),config=JSON.parse(JSON.stringify(DEFAULT_CONTROL_CONFIG));
+ const p=daemonPaths({root});fs.mkdirSync(p.dir,{recursive:true});
+ const fakeDaemon=path.join(base,'old-daemon.js');fs.writeFileSync(fakeDaemon,'setInterval(()=>{},1000);');
+ const old=spawn(process.execPath,[fakeDaemon],{detached:true,stdio:'ignore'});old.unref();
+ fs.writeFileSync(p.pid,JSON.stringify({pid:old.pid,startedAt:Date.now()-120000,version:'0.0.0'}));
+ fs.writeFileSync(p.runtime,JSON.stringify({heartbeatAt:Date.now()}));
+ const out=restartDaemonSync({root,config});
+ assert.equal(out.restarted,true);
+ assert.equal(out.previousPid,old.pid);
+ assert.equal(pidAlive(old.pid),false,'previous daemon process is terminated');
+ const live=await waitFor(()=>{const s=daemonStatus({root});return s.running&&s.version===PKG_VERSION?s:null;});
+ assert.ok(live,'replacement daemon heartbeats with the current code version');
+ const stopped=await stopDaemon({root});assert.equal(stopped.stopped,true);
+});
+
+test('restartDaemonSync starts a fresh daemon when none was registered',async()=>{
+ const base=temp(),root=path.join(base,'native'),config=JSON.parse(JSON.stringify(DEFAULT_CONTROL_CONFIG));
+ const out=restartDaemonSync({root,config});
+ assert.equal(out.restarted,true);
+ assert.equal(out.previousPid,null);
+ assert.equal(out.started,true);
+ const live=await waitFor(()=>{const s=daemonStatus({root});return s.running?s:null;});
+ assert.ok(live);
+ const stopped=await stopDaemon({root});assert.equal(stopped.stopped,true);
 });
 
 
