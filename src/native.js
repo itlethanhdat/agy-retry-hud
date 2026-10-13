@@ -10,6 +10,7 @@ import {startSession} from './adapter.js';
 import {QuotaProvider} from './quota.js';
 import {sanitize} from './hud.js';
 import {effectiveControls,loadControlConfig} from './control.js';
+import {agyboxSandboxRoot,agyboxSupervisorActive,agyboxRequestRotate} from './agybox-bus.js';
 import {createHandoff,finalizeSemanticHandoff,loadHandoff,validateWorkspace,CONTINUE_PROMPT,HANDOFF_PROMPT} from './handoff.js';
 
 const TERMINAL = new Set(['SUCCEEDED','CANCELED','EXHAUSTED','NEEDS_USER','PAUSED_UNCERTAIN','WEEKLY_BLOCKED','MULTI_CLI','RETRY_OFF']);
@@ -414,9 +415,28 @@ export function scheduleFromStop(root,payload,{now=Date.now(),config={},controlC
  state.startedAt=now;state.transientRetries=0;state.quotaRetries=0;state.message=state.message||DEFAULT_RESUME_MESSAGE;
  const cfg={...defaults,...ctl.retry,...config},d=decide(c,state,now,0,cfg);
  if(!d.action.startsWith('wait_')){setIncidentStatus(state,d.action==='exhausted'?'EXHAUSTED':'NEEDS_USER',now,{resolution:d.reason});state.status=d.action==='exhausted'?'EXHAUSTED':'NEEDS_USER';state.reason=d.reason;saveNative(root,state);return {decision:'stop',scheduled:false,reason:d.reason,incidentId:state.retryIncident?.id};}
+ // P3-3: retry.policy=rotate — hand quota waits to the agybox supervisor bus
+ // instead of scheduling a local wait-retry. The supervisor owns the live
+ // session and rotates it; this daemon must not also schedule a retry.
+ let rotateFallback='';
+ if(d.action==='wait_quota'&&ctl.retry?.policy==='rotate'){
+  const busRoot=agyboxSandboxRoot();
+  if(agyboxSupervisorActive(busRoot)){
+   agyboxRequestRotate(busRoot,{source:'daemon'});
+   state.retryKind='rotated';state.retryLabel='ROTATED';state.waitStartedAt=now;
+   state.nextRetryAt=null;state.reason='quota exhausted; rotate-request sent to agybox supervisor';
+   state.errorFingerprint=fp;state.config={...cfg};
+   setIncidentStatus(state,'RESOLVED',now,{resolvedAt:now,resolution:'rotated_to_supervisor',kind:'rotated',retryLabel:state.retryLabel});
+   state.status='IDLE';
+   if(state.scheduler)setSchedulerStatus(state,'RESOLVED',now,{nextRetryAt:null,completedAt:now});
+   saveNative(root,state);
+   return {decision:'stop',scheduled:false,state,incidentId:state.retryIncident.id,reason:state.reason,rotated:true};
+  }
+  rotateFallback='no agybox supervisor active; falling back to wait';
+ }
  state.status=d.action==='wait_quota'?'WAIT_QUOTA':'WAIT_BACKOFF';state.retryKind=c.kind;state.retryLabel=retryLabelFor(c,payload.error);state.waitStartedAt=now;state.nextRetryAt=d.at;state.reason=c.kind;state.errorFingerprint=fp;state.config={...cfg};setIncidentStatus(state,'WAITING',now,{nextRetryAt:d.at,kind:c.kind,retryLabel:state.retryLabel,deadlineSource:deadlineSourceFor(c,fallback.source)});state.scheduler=schedulerPlan(state,c,fallback.source,d.at,now);saveNative(root,state);
  let workerPid=null;try{workerPid=spawnWorker?.(id,state.retryIncident.id)??null;}catch(e){state.scheduler.status='LOST';state.scheduler.spawnError=true;state.reason='retry worker failed to start';saveNative(root,state);return {decision:'stop',scheduled:false,state,incidentId:state.retryIncident.id,reason:state.reason};}
- if(Number.isInteger(workerPid)&&workerPid>0){state.scheduler.workerPid=workerPid;state.scheduler.workerStartedAt=now;state.scheduler.status='WAITING';state.scheduler.lastHeartbeatAt=now;saveNative(root,state);}return {decision:'stop',scheduled:true,state,incidentId:state.retryIncident.id,workerPid};
+ if(Number.isInteger(workerPid)&&workerPid>0){state.scheduler.workerPid=workerPid;state.scheduler.workerStartedAt=now;state.scheduler.status='WAITING';state.scheduler.lastHeartbeatAt=now;saveNative(root,state);}return {decision:'stop',scheduled:true,state,incidentId:state.retryIncident.id,workerPid,...(rotateFallback?{reason:rotateFallback}:{})};
 }
 
 export function scheduleFromPreInvocation(root,payload,{now=Date.now(),controlConfig}={}){
