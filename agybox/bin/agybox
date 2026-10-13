@@ -100,7 +100,9 @@ async function cmdRun(runArgs) {
 
   function writeIdleState() {
     try {
-      fs.writeFileSync(stateFile, JSON.stringify({ phase: 'idle', updatedAt: Date.now() }));
+      const tmp = `${stateFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ phase: 'idle', updatedAt: Date.now() }));
+      fs.renameSync(tmp, stateFile);
     } catch {}
   }
 
@@ -193,10 +195,18 @@ async function cmdRun(runArgs) {
         console.log(`⏳ chờ '${acct}' reset sau ${fmtCountdown(ms)} — gõ \`agybox cancel-wait\` để dừng`);
       },
       onPick: ({ account }) => {
+        // Acquire BEFORE releasing: if the new lock loses the race we still
+        // hold the old one and can stop cleanly (exit 4, like P1 rotation)
+        // instead of dying lockless with a misleading exit code.
         if (account === lockedName) return;
-        releaseLock(root, lockedName);
         const lk = acquireLock(root, account);
-        if (!lk.ok) throw new Error(`không giữ được lock '${account}' khi chờ (pid ${lk.pid})`);
+        if (!lk.ok) {
+          console.error(`agybox: không giữ được lock '${account}' khi chờ (pid ${lk.pid}); dừng`);
+          writeIdleState();
+          releaseLock(root, lockedName);
+          process.exit(4);
+        }
+        releaseLock(root, lockedName);
         lockedName = account;
       },
     });

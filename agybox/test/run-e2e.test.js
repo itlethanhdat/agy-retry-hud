@@ -53,6 +53,8 @@ test('supervised run: waits for nearest reset, then auto-resumes', async () => {
     rotation: { resetBufferSec: 1, waitRecheckSec: 1, verifyTimeoutSec: 1 },
   }));
   assert.equal(spawnSync(process.execPath, [BIN, 'add', 'a', 'a@x'], { encoding: 'utf8', env: ENV2 }).status, 0);
+  // a stale cancel flag from a previous run must not abort this fresh wait
+  fs.writeFileSync(path.join(ROOT2, 'cancel-wait'), 'stale');
 
   const proc = spawn(process.execPath, [BIN, 'run'], { encoding: 'utf8', env: ENV2 });
   let out = '';
@@ -78,4 +80,33 @@ test('supervised run: waits for nearest reset, then auto-resumes', async () => {
   assert.equal(code, 0, 'run must exit 0 after auto-resume and natural session end; output:\n' + out);
   const leftovers = fs.existsSync(path.join(ROOT2, 'locks')) ? fs.readdirSync(path.join(ROOT2, 'locks')) : [];
   assert.deepEqual(leftovers, [], 'locks must be released on exit');
+});
+
+// Lock race during wait: b is picked for waiting but its lock is held by a
+// live pid → the supervisor must exit(4), never hang lockless (zombie).
+test('waiting: lock race on the picked account exits 4 instead of hanging', async () => {
+  const ROOT3 = fs.mkdtempSync(path.join(os.tmpdir(), 'agybox-lockrace-'));
+  const FAKEBIN3 = installFakeDocker(ROOT3);
+  const ENV3 = { ...process.env, AGYBOX_ROOT: ROOT3, PATH: FAKEBIN3 + ':' + process.env.PATH,
+    FAKE_RESET_IN_SECONDS: '2', FAKE_ALL_EXHAUSTED: '1' };
+  fs.writeFileSync(path.join(ROOT3, 'config.json'), JSON.stringify({
+    rotation: { resetBufferSec: 1, waitRecheckSec: 1, verifyTimeoutSec: 1 },
+  }));
+  assert.equal(spawnSync(process.execPath, [BIN, 'add', 'b', 'b@x'], { encoding: 'utf8', env: ENV3 }).status, 0);
+  assert.equal(spawnSync(process.execPath, [BIN, 'add', 'a', 'a@x'], { encoding: 'utf8', env: ENV3 }).status, 0);
+  // b's lock held by a live pid (this test process)
+  fs.mkdirSync(path.join(ROOT3, 'locks'), { recursive: true });
+  fs.writeFileSync(path.join(ROOT3, 'locks', 'b.json'),
+    JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+
+  const proc = spawn(process.execPath, [BIN, 'run', '--account', 'a'], { encoding: 'utf8', env: ENV3 });
+  let out = '';
+  proc.stdout.on('data', d => out += d);
+  proc.stderr.on('data', d => out += d);
+  const code = await Promise.race([
+    new Promise(res => proc.on('exit', c => res(c))),
+    new Promise(res => setTimeout(() => res('timeout'), 25000)),
+  ]);
+  assert.match(out, /không giữ được lock 'b'/, 'expected lock-race message; output:\n' + out);
+  assert.equal(code, 4, 'expected exit 4 on lock race, not a hang; output:\n' + out);
 });
