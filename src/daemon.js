@@ -29,11 +29,59 @@ function claimDaemon(root,{now=Date.now(),version=PKG_VERSION}={}){
  writeOwner(root,{pid:process.pid,startedAt:now,version});return p;
 }
 export function clearDeadDaemonFiles({root=nativeRoot()}={}){const p=daemonPaths({root}),o=readJSON(p.pid);if(o?.pid&&!pidAlive(o.pid)){try{fs.unlinkSync(p.pid);}catch{}return true;}return false;}
+// How long after spawn a daemon may be reused before its first heartbeat lands.
+const DAEMON_STARTUP_GRACE_MS=60000;
+// Pure, testable reuse policy for ensureDaemon. A pid that is alive is NOT
+// enough: the pid file can point at an unrelated recycled process, and a
+// daemon running older code silently executes outdated retry logic while every
+// caller believes the daemon is healthy.
+export function daemonReuseDecision(status,{now=Date.now(),version=PKG_VERSION}={}){
+ if(!status.processAlive)return {reuse:false,reason:'not_running'};
+ const freshStart=Number.isFinite(status.startedAt)&&now-status.startedAt<DAEMON_STARTUP_GRACE_MS;
+ if(!(status.running||freshStart))return {reuse:false,reason:'stale_heartbeat'};
+ if(status.version!==version)return {reuse:false,reason:'version_mismatch'};
+ return {reuse:true};
+}
+// Best-effort check that a pid belongs to our daemon entry (Linux /proc).
+// Returns null when it cannot be determined. Never signal a pid that is
+// positively foreign: the OS may have recycled it for an unrelated process.
+export function pidIsDaemonProcess(pid){
+ if(!Number.isInteger(pid)||pid<=0)return false;
+ try{
+  const argv=fs.readFileSync(`/proc/${pid}/cmdline`,'utf8').split('\0');
+  return (argv[1]||'').endsWith('daemon.js');
+ }catch{return null;}
+}
+// Synchronous variant of stopDaemon for ensureDaemon's self-healing path,
+// which runs in sync hook contexts. Mirrors the SIGTERM, wait, SIGKILL order.
+export function stopDaemonSync({root=nativeRoot(),timeoutMs=2000}={}){
+ const p=daemonPaths({root}),s=daemonStatus({root});
+ if(!s.processAlive){try{fs.unlinkSync(p.pid);}catch{}return {stopped:true,alreadyStopped:true};}
+ try{process.kill(s.pid,'SIGTERM');}catch{}
+ const end=Date.now()+timeoutMs,buf=new Int32Array(new SharedArrayBuffer(4));
+ while(Date.now()<end&&pidAlive(s.pid))Atomics.wait(buf,0,0,50);
+ if(pidAlive(s.pid)){try{process.kill(s.pid,'SIGKILL');}catch{}}
+ const stopped=!pidAlive(s.pid);
+ if(stopped){try{fs.unlinkSync(p.pid);}catch{}}
+ return {stopped,pid:s.pid};
+}
 export function ensureDaemon({root=nativeRoot(),config=loadControlConfig(),env=process.env,detached=true}={}){
  if(config.daemon?.enabled===false||config.daemon?.autoStart===false)return {started:false,reason:'daemon disabled',status:daemonStatus({root})};
- const current=daemonStatus({root});if(current.processAlive)return {started:false,reused:true,status:current};
+ const now=Date.now(),current=daemonStatus({root,now}),decision=daemonReuseDecision(current,{now});
+ if(decision.reuse)return {started:false,reused:true,status:current};
+ if(decision.reason==='version_mismatch'||decision.reason==='stale_heartbeat'){
+  // Only signal a process we positively identify as our daemon. A foreign
+  // pid (recycled by the OS, or unverifiable off-Linux) is never touched:
+  // the stale pid file is dropped and a fresh daemon starts instead.
+  if(pidIsDaemonProcess(current.pid)===true){
+   const stopped=stopDaemonSync({root});
+   if(!stopped.stopped)return {started:false,reason:'previous daemon would not stop',status:daemonStatus({root})};
+  }else{
+   try{fs.unlinkSync(daemonPaths({root}).pid);}catch{}
+  }
+ }
  clearDeadDaemonFiles({root});const entry=fileURLToPath(import.meta.url),child=spawn(process.execPath,[entry,'run','--state-root',root],{detached,stdio:'ignore',windowsHide:true,env:{...env,AGY_RETRY_DAEMON:'1'}});if(detached)child.unref();
- writeOwner(root,{pid:child.pid,startedAt:Date.now(),version:PKG_VERSION,status:'starting'});return {started:true,pid:child.pid,status:daemonStatus({root})};
+ writeOwner(root,{pid:child.pid,startedAt:Date.now(),version:PKG_VERSION,status:'starting'});return {started:true,pid:child.pid,status:daemonStatus({root}),replaced:decision.reason!=='not_running'?decision.reason:undefined};
 }
 export async function stopDaemon({root=nativeRoot(),timeoutMs=3000}={}){const p=daemonPaths({root}),s=daemonStatus({root});if(!s.processAlive){try{fs.unlinkSync(p.pid);}catch{}return {stopped:true,alreadyStopped:true};}
  try{process.kill(s.pid,'SIGTERM');}catch{}
