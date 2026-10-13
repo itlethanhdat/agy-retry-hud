@@ -1,7 +1,10 @@
 // Shared fake `docker` for CLI tests: --version, inspect, exec.
 // - `exec ... /usage` → canned quota JSON (agy-a exhausted, others 70%)
-// - `exec agy-a agy` (session) → prints a quota signal, exits on "/exit"
-// - other session execs → exit 0 after 1.5s idle, or on "/exit"
+//   Env: FAKE_RESET_IN_SECONDS (default 3600); FAKE_QUOTA_OK_FILE — when that
+//   file exists, every container reports 0.7 (simulates "reset happened").
+// - `exec agy-a agy` (fresh session, no --resume) → prints a quota signal,
+//   exits on "/exit"
+// - other session execs (or --resume ones) → exit 0 after 4s idle, or on "/exit"
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -15,14 +18,13 @@ const SCRIPT = [
   '    while [[ "$1" == -* ]]; do shift; done',
   '    container="$1"; shift',
   '    case "$*" in *"/usage"*)',
-  '      if [[ "$container" == "agy-a" ]]; then',
-  "        echo '{\"quota\":{\"x 5h\":{\"remaining_fraction\":0,\"reset_in_seconds\":3600}}}'",
-  '      else',
-  "        echo '{\"quota\":{\"x 5h\":{\"remaining_fraction\":0.7,\"reset_in_seconds\":3600}}}'",
-  '      fi',
+  '      RESET_S="${FAKE_RESET_IN_SECONDS:-3600}"',
+  '      if [[ -n "$FAKE_QUOTA_OK_FILE" && -f "$FAKE_QUOTA_OK_FILE" ]]; then FRAC="0.7";',
+  '      elif [[ "$container" == "agy-a" ]]; then FRAC="0"; else FRAC="0.7"; fi',
+  '      echo "{\\"quota\\":{\\"x 5h\\":{\\"remaining_fraction\\":$FRAC,\\"reset_in_seconds\\":$RESET_S}}}"',
   '      exit 0;;',
   '    esac',
-  '    if [[ "$container" == "agy-a" ]]; then',
+  '    if [[ "$container" == "agy-a" && "$*" != *"--resume"* ]]; then',
   '      sleep 0.5',
   '      echo "Error 429: RESOURCE_EXHAUSTED"',
   '    fi',

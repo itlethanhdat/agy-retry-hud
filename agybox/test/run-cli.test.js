@@ -41,3 +41,18 @@ test('run clears a stale lock and proceeds', () => {
   assert.doesNotMatch(r.stderr + r.stdout, /already/i);
   assert.ok(!fs.existsSync(lockFile('a')), 'stale lock file removed');
 });
+
+test('cancel-wait creates the flag file', () => {
+  const r = agybox('cancel-wait');
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(fs.existsSync(path.join(ROOT, 'cancel-wait')));
+});
+
+test('run holds the waiting lock: second run for same account is refused', () => {
+  agybox('add', 'b', 'b@x');
+  fs.mkdirSync(path.dirname(lockFile('b')), { recursive: true });
+  fs.writeFileSync(lockFile('b'), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+  const r = agybox('run', '--account', 'b');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr + r.stdout, /already/i);
+});
