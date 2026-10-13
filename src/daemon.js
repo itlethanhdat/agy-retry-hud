@@ -65,20 +65,34 @@ export function stopDaemonSync({root=nativeRoot(),timeoutMs=2000}={}){
  if(stopped){try{fs.unlinkSync(p.pid);}catch{}}
  return {stopped,pid:s.pid};
 }
+// Removes a previous daemon registration, stopping the process only when it is
+// positively identified as our daemon entry. A foreign or unverifiable pid is
+// never signaled; its stale pid file is simply dropped.
+function removeOldDaemon(root,status){
+ if(!status.processAlive){clearDeadDaemonFiles({root});return {ok:true};}
+ if(pidIsDaemonProcess(status.pid)===true){
+  const stopped=stopDaemonSync({root});
+  return {ok:stopped.stopped,pid:status.pid};
+ }
+ try{fs.unlinkSync(daemonPaths({root}).pid);}catch{}
+ return {ok:true,pid:status.pid,foreign:true};
+}
+// Unconditional, synchronous daemon replacement: drop whatever was registered
+// (a reinstall may carry same-version code fixes that version-drift detection
+// cannot see) and start a fresh daemon from the current on-disk code.
+export function restartDaemonSync({root=nativeRoot(),config=loadControlConfig(),env=process.env}={}){
+ const current=daemonStatus({root}),removed=removeOldDaemon(root,current);
+ if(!removed.ok)return {started:false,reason:'previous daemon would not stop',status:daemonStatus({root})};
+ const ensured=ensureDaemon({root,config,env});
+ return {...ensured,restarted:true,previousPid:current.pid||null};
+}
 export function ensureDaemon({root=nativeRoot(),config=loadControlConfig(),env=process.env,detached=true}={}){
  if(config.daemon?.enabled===false||config.daemon?.autoStart===false)return {started:false,reason:'daemon disabled',status:daemonStatus({root})};
  const now=Date.now(),current=daemonStatus({root,now}),decision=daemonReuseDecision(current,{now});
  if(decision.reuse)return {started:false,reused:true,status:current};
  if(decision.reason==='version_mismatch'||decision.reason==='stale_heartbeat'){
-  // Only signal a process we positively identify as our daemon. A foreign
-  // pid (recycled by the OS, or unverifiable off-Linux) is never touched:
-  // the stale pid file is dropped and a fresh daemon starts instead.
-  if(pidIsDaemonProcess(current.pid)===true){
-   const stopped=stopDaemonSync({root});
-   if(!stopped.stopped)return {started:false,reason:'previous daemon would not stop',status:daemonStatus({root})};
-  }else{
-   try{fs.unlinkSync(daemonPaths({root}).pid);}catch{}
-  }
+  const removed=removeOldDaemon(root,current);
+  if(!removed.ok)return {started:false,reason:'previous daemon would not stop',status:daemonStatus({root})};
  }
  clearDeadDaemonFiles({root});const entry=fileURLToPath(import.meta.url),child=spawn(process.execPath,[entry,'run','--state-root',root],{detached,stdio:'ignore',windowsHide:true,env:{...env,AGY_RETRY_DAEMON:'1'}});if(detached)child.unref();
  writeOwner(root,{pid:child.pid,startedAt:Date.now(),version:PKG_VERSION,status:'starting'});return {started:true,pid:child.pid,status:daemonStatus({root}),replaced:decision.reason!=='not_running'?decision.reason:undefined};

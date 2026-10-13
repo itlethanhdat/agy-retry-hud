@@ -1,5 +1,8 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import {spawn} from 'node:child_process';
 import {installAndWire,resolveInstallSourceDir,setupDoctor,validateSkillFrontmatter,wireStatusLine} from '../src/setup.js';
+import {daemonStatus,daemonPaths,pidAlive,stopDaemon} from '../src/daemon.js';
+import {PKG_VERSION} from '../src/version.js';
 function temp(prefix='agy-setup-'){return fs.mkdtempSync(path.join(os.tmpdir(),prefix));}
 
 test('one-command setup installs plugin then wires statusLine while preserving unrelated settings',()=>{
@@ -82,4 +85,33 @@ test('one-command setup accepts AGY 1.2.x shared config plugin install path',()=
 test('setup doctor rejects malformed skill frontmatter even when SKILL.md exists',()=>{
  const home=temp(),pluginDir=path.join(home,'.gemini','config','plugins','agy-retry-hud'),env={...process.env,HOME:home,USERPROFILE:home,XDG_CONFIG_HOME:path.join(home,'.config')};fs.mkdirSync(path.dirname(pluginDir),{recursive:true});fs.cpSync(path.resolve('plugin/agy-retry-hud'),pluginDir,{recursive:true});
  const setupSkill=path.join(pluginDir,'skills','setup','SKILL.md');fs.writeFileSync(setupSkill,'---\nname: setup\ndescription: broken: yaml scalar\n---\n');const health=validateSkillFrontmatter(setupSkill);assert.equal(health.exists,true);assert.equal(health.valid,false);const doctor=setupDoctor({home,env,platform:'linux'});assert.equal(doctor.skills.setup,true);assert.equal(doctor.skillFrontmatter.setup,false);assert.equal(doctor.skillsReady,false);assert.equal(doctor.reinstallRequired,true);
+});
+
+test('reinstall restarts a previously running daemon so the new code takes effect',async()=>{
+ const home=temp(),stateDir=temp(),source=path.resolve('plugin/agy-retry-hud');
+ const settings=path.join(home,'.gemini','antigravity-cli','settings.json');
+ fs.mkdirSync(path.dirname(settings),{recursive:true});fs.writeFileSync(settings,JSON.stringify({}));
+ const fake=path.join(temp(),'agy');fs.writeFileSync(fake,`#!/usr/bin/env node\nconst fs=require('fs'),path=require('path');const a=process.argv.slice(2);if(a[0]!=='plugin')process.exit(2);if(a[1]==='validate')process.exit(fs.existsSync(path.join(a[2],'plugin.json'))?0:2);if(a[1]==='install'){const dst=path.join(process.env.HOME,'.gemini','antigravity-cli','plugins','agy-retry-hud');fs.rmSync(dst,{recursive:true,force:true});fs.mkdirSync(path.dirname(dst),{recursive:true});fs.cpSync(a[2],dst,{recursive:true});process.exit(0)}process.exit(2);\n`);fs.chmodSync(fake,0o755);
+ const savedCtx=process.env.NODE_TEST_CONTEXT;delete process.env.NODE_TEST_CONTEXT;
+ const env={...process.env,HOME:home,USERPROFILE:home,AGY_RETRY_STATE_DIR:stateDir};
+ const waitLive=async(root)=>{const end=Date.now()+15000;while(Date.now()<end){const s=daemonStatus({root});if(s.running&&s.version===PKG_VERSION)return s;await new Promise(r=>setTimeout(r,50));}return null;};
+ try{
+  const first=installAndWire({sourceDir:source,home,agy:fake,env});
+  assert.equal(first.daemonRestart,null,'fresh install has no previous daemon to restart');
+  const root=path.join(stateDir,'native'),p=daemonPaths({root});
+  fs.mkdirSync(p.dir,{recursive:true});
+  const fakeDaemon=path.join(temp(),'stale-daemon.js');fs.writeFileSync(fakeDaemon,'setInterval(()=>{},1000);');
+  const old=spawn(process.execPath,[fakeDaemon],{detached:true,stdio:'ignore'});old.unref();
+  fs.writeFileSync(p.pid,JSON.stringify({pid:old.pid,startedAt:Date.now()-120000,version:'0.0.0'}));
+  fs.writeFileSync(p.runtime,JSON.stringify({heartbeatAt:Date.now()}));
+  const second=installAndWire({sourceDir:source,home,agy:fake,env});
+  assert.equal(second.daemonRestart?.restarted,true,'reinstall restarts the previously running daemon');
+  assert.equal(second.daemonRestart?.previousPid,old.pid);
+  assert.equal(pidAlive(old.pid),false,'stale daemon process is terminated by the reinstall');
+  const live=await waitLive(root);
+  assert.ok(live,'replacement daemon heartbeats with the current code version');
+  assert.equal((await stopDaemon({root})).stopped,true);
+ }finally{
+  if(savedCtx===undefined)delete process.env.NODE_TEST_CONTEXT;else process.env.NODE_TEST_CONTEXT=savedCtx;
+ }
 });

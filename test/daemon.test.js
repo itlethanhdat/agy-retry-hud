@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
-import {ensureDaemon,stopDaemon,daemonStatus,nextPollMs,runDaemon,scheduleDaemonHandoffs,daemonReuseDecision,stopDaemonSync,daemonPaths,pidAlive,pidIsDaemonProcess} from '../src/daemon.js';
+import {ensureDaemon,stopDaemon,daemonStatus,nextPollMs,runDaemon,scheduleDaemonHandoffs,daemonReuseDecision,stopDaemonSync,restartDaemonSync,daemonPaths,pidAlive,pidIsDaemonProcess} from '../src/daemon.js';
 import {PKG_VERSION} from '../src/version.js';
 import {DEFAULT_CONTROL_CONFIG,saveControlConfig} from '../src/control.js';
 import {saveNative,loadNative,mergeStatusline} from '../src/native.js';
@@ -93,6 +93,33 @@ test('ensureDaemon never signals a foreign process holding a recycled pid',async
  const live=await waitFor(()=>{const s=daemonStatus({root});return s.running?s:null;});
  assert.ok(live,'a fresh daemon still starts after the stale pid file is dropped');
  try{process.kill(foreign.pid,'SIGKILL');}catch{}
+ const stopped=await stopDaemon({root});assert.equal(stopped.stopped,true);
+});
+
+test('restartDaemonSync unconditionally replaces the registered daemon',async()=>{
+ const base=temp(),root=path.join(base,'native'),config=JSON.parse(JSON.stringify(DEFAULT_CONTROL_CONFIG));
+ const p=daemonPaths({root});fs.mkdirSync(p.dir,{recursive:true});
+ const fakeDaemon=path.join(base,'old-daemon.js');fs.writeFileSync(fakeDaemon,'setInterval(()=>{},1000);');
+ const old=spawn(process.execPath,[fakeDaemon],{detached:true,stdio:'ignore'});old.unref();
+ fs.writeFileSync(p.pid,JSON.stringify({pid:old.pid,startedAt:Date.now()-120000,version:'0.0.0'}));
+ fs.writeFileSync(p.runtime,JSON.stringify({heartbeatAt:Date.now()}));
+ const out=restartDaemonSync({root,config});
+ assert.equal(out.restarted,true);
+ assert.equal(out.previousPid,old.pid);
+ assert.equal(pidAlive(old.pid),false,'previous daemon process is terminated');
+ const live=await waitFor(()=>{const s=daemonStatus({root});return s.running&&s.version===PKG_VERSION?s:null;});
+ assert.ok(live,'replacement daemon heartbeats with the current code version');
+ const stopped=await stopDaemon({root});assert.equal(stopped.stopped,true);
+});
+
+test('restartDaemonSync starts a fresh daemon when none was registered',async()=>{
+ const base=temp(),root=path.join(base,'native'),config=JSON.parse(JSON.stringify(DEFAULT_CONTROL_CONFIG));
+ const out=restartDaemonSync({root,config});
+ assert.equal(out.restarted,true);
+ assert.equal(out.previousPid,null);
+ assert.equal(out.started,true);
+ const live=await waitFor(()=>{const s=daemonStatus({root});return s.running?s:null;});
+ assert.ok(live);
  const stopped=await stopDaemon({root});assert.equal(stopped.stopped,true);
 });
 
