@@ -6,7 +6,7 @@ import {atomicJSON} from './state.js';
 export const CONTROL_SCHEMA_VERSION=1;
 export const DEFAULT_CONTROL_CONFIG=Object.freeze({
  hud:{enabled:true,visible:true,color:true,compact:true,multiline:true,showProgressBar:true,showPlan:true,showBranch:true,showCwd:true,showTokens:true,showAgentState:true,showRetry:true,showHandoff:true,barWidth:10},
- retry:{enabled:true,stopWhenWeeklyExhausted:true,weeklyRemainingThreshold:0.01,autoDisarmIncidentOnSuccess:true,requireCurrentIncidentBeforeDispatch:true,quotaFallbackMs:18000000,resetMarginMs:90000,jitterMs:30000,transientBaseMs:60000,transientCapMs:900000,maxTransientRetries:6,maxQuotaRetries:2,maxJobElapsedMs:86400000,watchdogMs:3600000},
+ retry:{enabled:true,policy:'wait',stopWhenWeeklyExhausted:true,weeklyRemainingThreshold:0.01,autoDisarmIncidentOnSuccess:true,requireCurrentIncidentBeforeDispatch:true,quotaFallbackMs:18000000,resetMarginMs:90000,jitterMs:30000,transientBaseMs:60000,transientCapMs:900000,maxTransientRetries:6,maxQuotaRetries:2,maxJobElapsedMs:86400000,watchdogMs:3600000},
  handoff:{enabled:true,snapshotAt:85,prepareAt:90,rolloverAt:95,cancelRolloverBelow:80,autoCreateNewSession:true,semanticSummary:true,mechanicalFallback:true},
  daemon:{enabled:true,autoStart:true,heartbeatMs:5000,idlePollMs:10000,waitQuotaPollMs:30000,waitBackoffPollMs:5000,nearDeadlineMs:60000,nearDeadlinePollMs:1000,activePollMs:500,maxConcurrentDispatch:1}
 });
@@ -21,6 +21,7 @@ export function controlConfigPath({platform=process.platform,home=os.homedir(),e
 export function validateControlConfig(input){
  const c=clone(input||{}),r=c.retry,h=c.handoff,u=c.hud,d=c.daemon;
  if(!r||typeof r!=='object'||typeof r.enabled!=='boolean'||typeof r.stopWhenWeeklyExhausted!=='boolean'||typeof r.autoDisarmIncidentOnSuccess!=='boolean'||typeof r.requireCurrentIncidentBeforeDispatch!=='boolean')throw Error('invalid retry config');
+ if(!['wait','rotate'].includes(r.policy))throw Error('invalid retry policy: '+r.policy);
  if(typeof r.weeklyRemainingThreshold!=='number'||r.weeklyRemainingThreshold<0||r.weeklyRemainingThreshold>1)throw Error('invalid weeklyRemainingThreshold');
  for(const k of ['quotaFallbackMs','resetMarginMs','jitterMs','transientBaseMs','transientCapMs','maxTransientRetries','maxQuotaRetries','maxJobElapsedMs','watchdogMs'])if(!Number.isFinite(r[k])||r[k]<0)throw Error('invalid retry config value: '+k);
  if(!h||typeof h!=='object'||typeof h.enabled!=='boolean')throw Error('invalid handoff config');
@@ -40,6 +41,10 @@ export function loadControlConfig({file=controlConfigPath()}={}){
  const flatMap={color:'color',multiline:'multiline',show_progress_bar:'showProgressBar',show_plan:'showPlan',show_branch:'showBranch',show_cwd:'showCwd',show_tokens:'showTokens',show_agent_state:'showAgentState',show_retry:'showRetry',bar_width:'barWidth'};
  for(const [oldKey,newKey] of Object.entries(flatMap))if(oldKey in raw&&!(newKey in hudRaw))hudRaw[newKey]=raw[oldKey];
  const c={hud:{...DEFAULT_CONTROL_CONFIG.hud,...hudRaw},retry:mergeSection(DEFAULT_CONTROL_CONFIG.retry,raw,'retry'),handoff:mergeSection(DEFAULT_CONTROL_CONFIG.handoff,raw,'handoff'),daemon:mergeSection(DEFAULT_CONTROL_CONFIG.daemon,raw,'daemon')};
+ // retry.policy: only 'wait' | 'rotate' are meaningful. Normalize unknown values
+ // (typos, or values written by a newer version) to the safe default instead of
+ // throwing on load — this is P3's contract for the daemon in src/native.js.
+ if(c.retry.policy!=='wait'&&c.retry.policy!=='rotate')c.retry.policy='wait';
  // NOTE: NO_COLOR / TERM=dumb sniffing is intentionally NOT applied here. It is a
  // transient, runtime-only override (see loadHudConfig and renderNativeStatusline).
  // Applying it here poisoned the saved config: any load→save roundtrip
