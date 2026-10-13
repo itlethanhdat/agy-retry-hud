@@ -1,0 +1,229 @@
+#!/usr/bin/env node
+// agybox CLI — P0: registry, status, workspace mappings. P1: run/rotate supervisor. Hub: `agybox hub`.
+import fs from 'node:fs';
+import path from 'node:path';
+import { listAccounts, getAccount, addAccount, removeAccount, refreshAllQuotas, refreshAccountQuota } from '../lib/accounts.js';
+import { sandboxRoot, loadConfig, saveConfig, listWorkspaceMappings, expandHome } from '../lib/config.js';
+import { dockerAvailable } from '../lib/docker.js';
+import { fmtCountdown } from '../lib/quota.js';
+import { matchQuotaSignal } from '../lib/signals.js';
+import { selectNextAccount } from '../lib/rotate.js';
+import { summarizeTranscript } from '../lib/handoff.js';
+import { SupervisedSession, rotateOnce, acquireLock, releaseLock, getGitInfo } from '../lib/supervisor.js';
+import { startHub } from '../hub/server.js';
+
+const [, , cmd, ...args] = process.argv;
+
+function usage() {
+  console.log(`agybox — multi-account AGY sandbox manager (v0.1.0)
+
+Usage:
+  agybox status                  quota/reset table for all accounts
+  agybox list                    list registered accounts
+  agybox add <name> [email]      register a new account (creates home dir)
+  agybox remove <name>           remove an account (keeps nothing running)
+  agybox workspaces              list workspace folder mappings
+  agybox run [--account NAME]    start a supervised agy session (auto-rotate on quota)
+  agybox rotate [NAME]          set preferred account for the next supervised run
+  agybox hub [--port N] [--open]  start the web management UI
+  agybox help                    this help
+`);
+}
+
+function pad(s, n) { s = String(s ?? '-'); return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); }
+
+async function cmdStatus() {
+  const states = await refreshAllQuotas();
+  console.log(pad('ACCOUNT', 12) + pad('CONTAINER', 16) + pad('5H', 8) + pad('WEEKLY', 8) + pad('RESET IN', 14) + 'STATE');
+  console.log('-'.repeat(70));
+  for (const s of states) {
+    const q = s; // refreshAccountQuota returns buckets at top level
+    const pct = b => b ? `${Math.round(b.remainingFraction * 100)}%` : '?';
+    const b5 = q?.buckets.find(b => b.window === '5h');
+    const bw = q?.buckets.find(b => b.window === 'weekly');
+    const resetIn = q?.nearestResetAt ? fmtCountdown(q.nearestResetAt - Date.now()) : '?';
+    const state = s.error ? `error: ${s.error}` : (s.containerRunning ? 'up' : 'down');
+    console.log(pad(s.name, 12) + pad(s.container, 16) + pad(pct(b5), 8) + pad(pct(bw), 8) + pad(resetIn, 14) + state);
+  }
+}
+
+function spawnAgySession(account, agyArgs) {
+  // stdin piped (forwarded from the user's terminal below) so the supervisor
+  // can watch output and still ask agy to exit gracefully; stdout/stderr are
+  // piped for signal watching, then re-emitted for display.
+  // NOTE: without a real pty some TUIs may misbehave — known P1 limitation.
+  const s = new SupervisedSession();
+  const tty = process.stdin.isTTY && process.stdout.isTTY;
+  s.start('docker', ['exec', tty ? '-it' : '-i', account.container, 'agy', ...agyArgs],
+    { stdio: ['pipe', 'pipe', 'pipe'] });
+  s.on('output', ({ stream, data }) => (stream === 'stderr' ? process.stderr : process.stdout).write(data));
+  s.forwardStdin(process.stdin);
+  return s;
+}
+
+/** Best-effort host dir of the first workspace mapping (for git context). */
+function firstWorkspaceDir() {
+  const m = loadConfig().workspaces?.[0];
+  if (!m?.hostPath) return '';
+  const p = expandHome(m.hostPath);
+  try { return fs.statSync(p).isDirectory() ? p : ''; } catch { return ''; }
+}
+
+async function cmdRun(runArgs) {
+  let want = null;
+  for (let i = 0; i < runArgs.length; i++) if (runArgs[i] === '--account') want = runArgs[++i];
+  const cfg = loadConfig();
+  const accounts = listAccounts();
+  if (!accounts.length) throw new Error('no accounts registered; run `agybox add <name>` first');
+  const name = want || cfg.rotation.order[0] || accounts[0].name;
+  const acc = getAccount(name);
+  if (!acc) throw new Error(`unknown account: ${name}`);
+  const root = sandboxRoot();
+  const lock = acquireLock(root, acc.name);
+  if (!lock.ok) throw new Error(`account '${acc.name}' is already supervised by pid ${lock.pid}`);
+  if (!dockerAvailable()) { releaseLock(root, acc.name); throw new Error('docker is required for `agybox run` but was not found'); }
+
+  const policy = cfg.rotation;
+  const rotState = { rotationsThisSession: 0, lastRotationAt: 0, sessionId: `sess-${Date.now()}`, notBefore: new Map() };
+  const handoffDir = path.join(root, 'handoffs');
+  const transcript = [];
+  const spawnFor = (account, agyArgs) => spawnAgySession(account, agyArgs);
+  let active = acc, current = spawnFor(acc, []);
+  let lockedName = acc.name, rotating = false, rotationInFlight = false;
+
+  function watch(sess) {
+    let done = false;
+    const onExit = () => {
+      if (done || sess !== current) return; // stale session's late exit
+      done = true;
+      if (rotationInFlight) return; // torn down for rotation; new session watched separately
+      releaseLock(root, lockedName);
+      process.exit(0);
+    };
+    sess.on('line', line => {
+      transcript.push(line);
+      if (transcript.length > 200) transcript.shift();
+      if (rotating || !matchQuotaSignal(line)) return;
+      rotating = true;
+      doRotate().catch(e => console.error('agybox: rotation failed:', e.message)).finally(() => rotating = false);
+    });
+    // The new session may already have exited during the resume grace window;
+    // isRunning() closes that race (single-threaded: no await in between).
+    if (!sess.isRunning()) onExit();
+    else sess.on('exit', onExit);
+  }
+
+  async function doRotate() {
+    const prevActive = active.name, prevAt = rotState.lastRotationAt, now = Date.now();
+    // Handoff context: transcript tail + best-effort git snapshot, so the
+    // fallback path (Review Focus #4) never resumes empty-handed.
+    rotState.summary = summarizeTranscript(transcript);
+    const gi = getGitInfo(firstWorkspaceDir());
+    rotState.gitHead = gi.gitHead; rotState.gitDirty = gi.gitDirty;
+    rotationInFlight = true;
+    let r;
+    try {
+      r = await rotateOnce({
+        session: current, activeAccount: active, accounts,
+        getQuota: n => refreshAccountQuota(n), policy, rotState,
+        handoffDir, now, spawnFor,
+      });
+    } finally {
+      rotationInFlight = false;
+    }
+    if (r.exhausted) {
+      console.log('Tất cả account đều hết quota (P1: chờ tay, P2 sẽ tự chờ reset).');
+      releaseLock(root, lockedName);
+      process.exit(3);
+    }
+    if (r.to) {
+      // flap detection: the account we just left burned its verified quota
+      // suspiciously fast → don't trust its telemetry for 15 minutes.
+      if (prevAt && now - prevAt < 60_000) rotState.notBefore.set(prevActive, now + 15 * 60_000);
+      console.log(`⟳ ${prevActive} → ${r.to} (resume: ${r.resumeMode})`);
+      releaseLock(root, prevActive);
+      const lk = acquireLock(root, r.to);
+      if (!lk.ok) {
+        console.error(`agybox: lock race for '${r.to}' (pid ${lk.pid}); stopping`);
+        try { await r.session.gracefulStop(); } catch {}
+        process.exit(4);
+      }
+      lockedName = r.to;
+      active = getAccount(r.to);
+      current = r.session;
+      watch(current);
+    }
+  }
+  watch(current);
+  console.log(`supervised session on '${acc.name}' (${acc.container}); Ctrl-C to stop`);
+  process.on('SIGINT', async () => { try { await current.gracefulStop(); } catch {} releaseLock(root, lockedName); process.exit(0); });
+  await new Promise(() => {}); // run until the session exits or SIGINT
+}
+
+function cmdRotate(rotateArgs) {
+  const cfg = loadConfig();
+  const accounts = listAccounts();
+  if (!accounts.length) throw new Error('no accounts registered');
+  let target = rotateArgs[0] ? getAccount(rotateArgs[0]) : null;
+  if (rotateArgs[0] && !target) throw new Error(`unknown account: ${rotateArgs[0]}`);
+  const hasQuota = q => { const b = (q.buckets || []).find(x => x.window === '5h'); return b && b.remainingFraction > 0; };
+  if (!target) {
+    const quotas = new Map(accounts.map(a => [a.name, refreshAccountQuota(a.name)]));
+    target = selectNextAccount({ accounts, quotas, order: cfg.rotation.order, activeName: '', notBefore: new Map(), now: Date.now() });
+    if (!target) throw new Error('no account with quota available');
+  } else if (!hasQuota(refreshAccountQuota(target.name))) {
+    throw new Error(`account '${target.name}' has no 5h quota`);
+  }
+  // Ruling: one-shot `rotate` sets the preferred account for the next
+  // `agybox run` (moves to front of rotation.order). It does not move a live
+  // session — no cross-process IPC in P1; the watcher owns live rotation.
+  cfg.rotation.order = [target.name, ...cfg.rotation.order.filter(n => n !== target.name)];
+  saveConfig(cfg);
+  console.log(`preferred account: ${target.name}`);
+}
+
+async function main() {
+  try {
+    switch (cmd) {
+      case 'status': await cmdStatus(); break;
+      case 'list': {
+        for (const a of listAccounts()) console.log(`${a.name}\t${a.email || ''}\t${a.container}`);
+        break;
+      }
+      case 'add': {
+        if (!args[0]) { console.error('usage: agybox add <name> [email]'); process.exit(2); }
+        const a = addAccount({ name: args[0], email: args[1] || '' });
+        console.log(`registered account '${a.name}' → ${a.home}`);
+        console.log('next: run `agybox hub` and use the web UI to log in, or H1 `agybox login`.');
+        break;
+      }
+      case 'remove': {
+        if (!args[0]) { console.error('usage: agybox remove <name>'); process.exit(2); }
+        removeAccount(args[0]);
+        console.log(`removed account '${args[0]}'`);
+        break;
+      }
+      case 'workspaces': {
+        const cfg = loadConfig();
+        for (const m of listWorkspaceMappings(cfg)) {
+          console.log(`${m.scope === 'global' ? '*' : m.scope}\t${m.mode}\t${m.hostPath} → ${m.containerPath}`);
+        }
+        break;
+      }
+      case 'run': await cmdRun(args); break;
+      case 'rotate': cmdRotate(args); break;
+      case 'hub': {
+        let port = 8765, open = false;
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === '--port') port = Number(args[++i]) || port;
+          if (args[i] === '--open') open = true;
+        }
+        await startHub({ port, open });
+        break;
+      }
+      case 'help': case undefined: case '-h': case '--help': usage(); break;
+      default: console.error(`unknown command: ${cmd}`); usage(); process.exit(2);
+    }
+  } catch (e) { console.error('agybox:', e.message); process.exit(1); }
+}
+main();
